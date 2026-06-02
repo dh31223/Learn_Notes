@@ -23,47 +23,65 @@
 ### 2.1线性回归数学原理
 
 线性回归的标签y和特征值x的关系：
+
 $$
-y = w_1 x_1 + w_2 x_2 + \cdots + w_n x_n + b
+y = w\_1 x\_1 + w\_2 x\_2 + \cdots + w\_n x\_n + b
 $$
+
 
 而线性回归模型所要做的就是**找到最佳的权重w和偏置b**
 
-$$
-X = \begin{bmatrix}1 & x_{11} & x_{12} & \cdots & x_{1d} \\
-				   1 & x_{21} & x_{22} & \cdots & x_{2d} \\
-				   \vdots &\vdots  &\vdots  &\ddots &\vdots \\
-				   1 & x_{n1} & x_{n2} & \cdots & x_{nd}
-	\end{bmatrix}
-	
-\\
-\\
-\theta = \begin{bmatrix}
-		b\\w_1\\w_2\\\vdots\\w_d
-		 \end{bmatrix}
-\\
-\\
-X\theta = Y_{pre} = \begin{bmatrix}
-		y_1\\y_2\\\vdots\\y_d
-		 \end{bmatrix}
-\\
-\\
-损失函数：
-loss(\theta) = \frac{1}{2} \begin{Vmatrix} X\theta - Y_{true} \end{Vmatrix}^2 \\= \frac{1}{2} \begin{Vmatrix} Y_{pre} - Y_{true} \end{Vmatrix}^2\\ = \frac{1}{2} (X\theta - Y_{true})^T (X\theta - Y_{true})
-\\
-= \frac{1}{2}[(X\theta)^T - Y_{true}^T](X\theta - Y_{true})\\ = \frac{1}{2}[(X\theta)^TX\theta - (X\theta)^T Y_{true} - Y_{true}^TX\theta+Y_{ture}^TY_{true}]
-\\=\frac{1}{2}[\theta^TX^TX\theta - 2Y_{true}^TX\theta + Y_{ture}^TY_{true}]\\其中(X\theta)^T Y_{true} 和 Y_{true}^TX\theta都是标量，所以他们的转置等于自己。\\
-根据矩阵求导法则:\frac{\partial (X^TAX)}{\partial X} = (A+A^T)X\\\frac{\partial(a^TX)}{\partial X} = a
-\\
-所以:\frac{\partial loss}{\partial\theta} = \nabla_{\theta} loss(\theta) = \frac{1}{2}[2X^TX\theta - 2X^TY_{true}] = X^TX\theta - X^TY_{true}
-\\
-为了求出loss的最小值，我们就必须找到梯度为0的w和b，也就是\theta
-\\
-令 \nabla_{\theta} loss(\theta) = 0 = X^TX\theta - X^TY_{true} => \theta = (X^TX)^{-1}X^TY_{true}
-\\
-所以最优解\theta = (X^TX)^{-1}X^TY
-\\只有线性回归才有通解，并且只有当X^TX可逆时，才能直接求出\theta
-$$
+$$X = \begin{bmatrix}1 & x\_{11} & x\_{12} & \cdots & x\_{1d} \\
+                     1 & x\_{21} & x\_{22} & \cdots & x\_{2d} \\
+                     \vdots &\vdots  &\vdots  &\ddots &\vdots \\
+                     1 & x\_{n1} & x\_{n2} & \cdots & x\_{nd}
+      \end{bmatrix}$$
+
+  $$\theta = \begin{bmatrix}
+          b\\
+		  w\_1\\
+		  w\_2\\
+		  \vdots\\
+		  w\_d
+          \end{bmatrix}$$
+
+  $$X\theta = Y\_{pre} = \begin{bmatrix}
+          y\_1\\
+		  y\_2\\
+		  \vdots\\
+		  y\_d
+           \end{bmatrix}$$
+
+  损失函数：
+
+  $$loss(\theta) = \frac{1}{2} \begin{Vmatrix} X\theta - Y\_{true} \end{Vmatrix}^2 = \frac{1}{2} \begin{Vmatrix}
+  Y\_{pre} - Y\_{true} \end{Vmatrix}^2 = \frac{1}{2} (X\theta - Y\_{true})^T (X\theta - Y\_{true})$$
+
+  $$= \frac{1}{2}[(X\theta)^T - Y\_{true}^T](X\theta - Y\_{true}) = \frac{1}{2}[(X\theta)^TX\theta - (X\theta)^T
+  Y\_{true} - Y\_{true}^TX\theta+Y\_{true}^TY\_{true}]$$
+
+  $$=\frac{1}{2}[\theta^TX^TX\theta - 2Y\_{true}^TX\theta + Y\_{true}^TY\_{true}]$$
+
+  其中$(X\theta)^T Y\_{true}$ 和 $Y\_{true}^TX\theta$都是标量，所以他们的转置等于自己。
+
+  根据矩阵求导法则:
+
+  $$\frac{\partial (X^TAX)}{\partial X} = (A+A^T)X$$
+
+  $$\frac{\partial(a^TX)}{\partial X} = a$$
+
+  所以:
+
+  $$\frac{\partial loss}{\partial\theta} = \nabla\_{\theta} loss(\theta) = \frac{1}{2}[2X^TX\theta - 2X^TY\_{true}] =
+  X^TX\theta - X^TY\_{true}$$
+
+  为了求出loss的最小值，我们就必须找到梯度为0的w和b，也就是$\theta$。
+
+  令 $\nabla\_{\theta} loss(\theta) = 0 = X^TX\theta - X^TY\_{true}$ => $\theta = (X^TX)^{-1}X^TY\_{true}$
+
+  所以最优解$\theta = (X^TX)^{-1}X^TY$
+
+  只有线性回归才有通解，并且只有当$X^TX$可逆时，才能直接求出$\theta$。
 
 ### 2.2 学习率对loss的影响
 
