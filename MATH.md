@@ -48,7 +48,16 @@
 
 
 $$
-\frac{\partial Y}{\partial X} = \begin{bmatrix}\frac{\partial y_1}{\partial X} \\ \frac{\partial y_2}{\partial X} \\ \vdots \\ \frac{\partial y_m}{\partial X}\end{bmatrix} = \begin{bmatrix} \frac{\partial y_1}{\partial x_1} & \frac{\partial y_1}{\partial x_2} & \cdots & \frac{\partial y_1}{\partial x_n} \\ \frac{\partial y_2}{\partial x_1} & \frac{\partial y_2}{\partial x_2} & \cdots & \frac{\partial y_2}{\partial x_n} \\ \vdots & \vdots & \ddots & \vdots \\ \frac{\partial y_m}{\partial x_1} & \frac{\partial y_m}{\partial x_2} & \cdots & \frac{\partial y_m}{\partial x_n}\end{bmatrix}
+\frac{\partial Y}{\partial X} = \begin{bmatrix}
+\frac{\partial y_1}{\partial X} \\ 
+\frac{\partial y_2}{\partial X} \\ 
+\vdots \\ 
+\frac{\partial y_m}{\partial X}
+\end{bmatrix} = \begin{bmatrix} \frac{\partial y_1}{\partial x_1} & \frac{\partial y_1}{\partial x_2} & \cdots & \frac{\partial y_1}{\partial x_n} \\ 
+\frac{\partial y_2}{\partial x_1} & \frac{\partial y_2}{\partial x_2} & \cdots & \frac{\partial y_2}{\partial x_n} \\ 
+\vdots & \vdots & \ddots & \vdots \\ 
+\frac{\partial y_m}{\partial x_1} & \frac{\partial y_m}{\partial x_2} & \cdots & \frac{\partial y_m}{\partial x_n}
+\end{bmatrix}
 $$
 
 $$

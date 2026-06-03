@@ -23,9 +23,11 @@
 ### 2.1线性回归数学原理
 
 线性回归的标签y和特征值x的关系：
+
 $$
-y = w_1 x_1 + w_2 x_2 + \cdots + w_n x_n + b
+y = w\_1 x\_1 + w\_2 x\_2 + \cdots + w\_n x\_n + b
 $$
+
 
 而线性回归模型所要做的就是**找到最佳的权重w和偏置b**
 
@@ -64,6 +66,7 @@ loss(\theta) = \frac{1}{2} \begin{Vmatrix} X\theta - Y_{true} \end{Vmatrix}^2 \\
 所以最优解\theta = (X^TX)^{-1}X^TY
 \\只有线性回归才有通解，并且只有当X^TX可逆时，才能直接求出\theta
 $$
+
 
 ### 2.2 学习率对loss的影响
 
