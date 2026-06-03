@@ -11,7 +11,7 @@
 
 ### 第二天 | 特征分解与正定矩阵
 
-- 正定矩阵A对素有的非零向量x，都有Ax > 0。
+- 正定矩阵A对所有的非零向量x，都有 x^T A x > 0（二次型大于0，不是Ax>0，Ax是向量没法比大小）。
 - 所有特征值 > 0 就是正定矩阵。
 - Hessian正定就代表该点是极小值。
 
@@ -52,7 +52,7 @@ $$
 $$
 
 $$
-\frac{\partial (X^TAX)}{\partial X} = (A - A^T)X
+\frac{\partial (X^TAX)}{\partial X} = (A + A^T)X \quad \text{（若A对称则}=2AX\text{）}
 \\
 其中a是向量，A是矩阵
 \\
@@ -73,13 +73,40 @@ $$
 
 ### 第八天 | 黑塞矩阵 + 链式法则
 
+#### 8.1 对于一个多元标量函数 f(x1,x2,…,xn)，它的 **黑塞矩阵** 是一个 n×n 的方阵，第i行第j列的元素是：
+$$
+H_{ij} = \frac{\partial^2 f}{\partial x_i \partial x_j}
+$$
 
+例如：
+$$
+f(x, y) = x^2 + xy + y^2
+$$
 
+第一步：求一阶偏导（梯度）
+$$
+\frac{\partial f}{\partial x} = 2x + y, \quad \frac{\partial f}{\partial y} = x + 2y
+$$
 
+第二步：求二阶偏导
+$$
+\frac{\partial^2 f}{\partial x^2} = 2, \quad \frac{\partial^2 f}{\partial y^2} = 2, \quad \frac{\partial^2 f}{\partial x \partial y} = \frac{\partial}{\partial x}(x + 2y) = 1, \quad \frac{\partial^2 f}{\partial y \partial x} = \frac{\partial}{\partial y}(2x + y) = 1
+$$
 
+第三步：写成矩阵
+$$
+H = \begin{bmatrix} 2 & 1 \\ 1 & 2 \end{bmatrix}
+$$
 
+这是一个常数矩阵，它的值不依赖x和y，它的特征值都为正，是**正定矩阵**。
 
+#### 8.2 几何意义：
 
+- 对于一元函数$f(x)$，二阶导数$f''(x)$就表示曲线在该点的弯曲方向和弯曲程度，如果是二次函数，则处处弯曲方向和弯曲程度都相等，因为$f''(x)$是常数。
+- 对于二元函数$z = f(x, y)$，黑塞矩阵描述了曲面在某个点附近的**局部弯曲形状**：
+	+ 它决定了沿**切平面内的某个方向**的曲率
+	+ 比如，上面的例子$f(x, y) = x^2 + xy + y^2$是个抛物面，在所有方向上都向上弯曲，也就对应了黑塞矩阵式正定矩阵，黑塞矩阵正是反应弯曲的矩阵。
+>**直观类比：**梯度告诉你“该往哪个山坡走最陡”，黑塞告诉你“这个山坡是缓坡还是陡坡，以及坡度的变化趋势”。
 
 
 

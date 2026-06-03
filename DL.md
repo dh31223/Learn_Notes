@@ -51,8 +51,8 @@ X\theta = Y_{pre} = \begin{bmatrix}
 损失函数：
 loss(\theta) = \frac{1}{2} \begin{Vmatrix} X\theta - Y_{true} \end{Vmatrix}^2 \\= \frac{1}{2} \begin{Vmatrix} Y_{pre} - Y_{true} \end{Vmatrix}^2\\ = \frac{1}{2} (X\theta - Y_{true})^T (X\theta - Y_{true})
 \\
-= \frac{1}{2}[(X\theta)^T - Y_{true}^T](X\theta - Y_{true})\\ = \frac{1}{2}[(X\theta)^TX\theta - (X\theta)^T Y_{true} - Y_{true}^TX\theta+Y_{ture}^TY_{true}]
-\\=\frac{1}{2}[\theta^TX^TX\theta - 2Y_{true}^TX\theta + Y_{ture}^TY_{true}]\\其中(X\theta)^T Y_{true} 和 Y_{true}^TX\theta都是标量，所以他们的转置等于自己。\\
+= \frac{1}{2}[(X\theta)^T - Y_{true}^T](X\theta - Y_{true})\\ = \frac{1}{2}[(X\theta)^TX\theta - (X\theta)^T Y_{true} - Y_{true}^TX\theta + Y_{true}^TY_{true}]
+\\=\frac{1}{2}[\theta^TX^TX\theta - 2Y_{true}^TX\theta + Y_{true}^TY_{true}]\\其中(X\theta)^T Y_{true} 和 Y_{true}^TX\theta都是标量，所以他们的转置等于自己。\\
 根据矩阵求导法则:\frac{\partial (X^TAX)}{\partial X} = (A+A^T)X\\\frac{\partial(a^TX)}{\partial X} = a
 \\
 所以:\frac{\partial loss}{\partial\theta} = \nabla_{\theta} loss(\theta) = \frac{1}{2}[2X^TX\theta - 2X^TY_{true}] = X^TX\theta - X^TY_{true}
@@ -219,3 +219,139 @@ tensor([[ 1.9993],
 """
 ```
 
+### 2.4 学习率lr和epoch的关系
+
+该模型对应的数据最合适的lr和epoch应该是lr = 0.3、epoch = 3。如图：
+
+<img src="img/lr=0.3_epochs=3.png" alt="图片" style="zoom:50%;" />
+
+我们对参数lr进行调整，将其调整为lr = 0.0003、epoch = 3。如图：
+
+<img src="img/lr=0.0003_epochs=3.png" alt="图片" style="zoom:50%;" />
+
+>由于学习率lr过低，epoch也低，导致学习不充分，也就是欠拟合，loss一直降不下来。
+
+我们将参数epoch提升到100。如图：
+
+<img src="img/lr=0.0003_epochs=100.png" alt="图片" style="zoom:50%;" />
+
+>此时虽然学习率低，但是epoch上来了，也就是扫描了100遍该训练数据，也能强行把loss降下来。
+
+通常工程中的参数很难找到理想的，一般情况下都是这种情况：
+
+<img src="img/lr=0.03_epochs=3.png" alt="图片" style="zoom:50%;" />
+
+>loss有升有降，但loss最终能下降到可接受范围。
+
+学习率过小会导致欠拟合，学习率过大则会造成梯度爆炸：
+
+<img src="img/lr=3_epochs=3.png" alt="图片" style="zoom:50%;" />
+
+>此时loss已经是nan了，梯度爆炸了，学习率过大，导致权重变化过快。
+
+**总结：**
+1. 当学习率过小的时候，loss降不下来，提升学习次数（epochs），有可能可以降下来，但是推荐调整参数。
+2. 当学习率过大的时候，会出现梯度爆炸，loss=nan，请立刻调整学习率。
+
+### 2.5 用torch实现线性回归
+
+```python
+class model(nn.Module):
+    #定义单层神经网络
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        #一层线性回归网络层
+        self.layout1 = nn.Linear(in_features = 2, out_features = 1)
+    
+    def forward(self, x):
+
+        x = self.layout1(x)
+        #经过线性计算之后直接返回值
+        return x
+if __name__ == '__main__':
+    plt.figure(figsize = (10, 5))
+    #初始化样本数量
+    example = 1000
+    #初始化真实的w和b
+    w_true = torch.tensor([[2.], [-3.4]]) # 2*1
+    b_true = torch.tensor(1.0)
+    #随机生成样本
+    x = torch.normal(0, 3, (example, 2))# example*2
+    #y_true的值
+    y_true =  x @ w_true + b_true + torch.normal(0, 0.01, (example, 1))
+    #把feature和label组合成dataset！！！！！
+    data = TensorDataset(x, y_true)#Dataset可以把feature和label组合起来，格式类似于DataFrame但是在深度学习中比DataFrame更加方便
+    #初始化参数
+    lr = 0.003
+    epochs = 3
+    batch_size = 10
+    net = model()
+    #输出初始化的w和b
+    print(net.layout1.weight, ' ', net.layout1.bias)
+    #定义损失函数
+    loss = nn.MSELoss()
+    #定义优化器，用来优化参数的，梯度下降
+    opt = optim.SGD(net.parameters(), lr = lr)
+    loss_num = []
+    for epoch in range(epochs):
+        data_loader = DataLoader(data, batch_size, shuffle = True)
+        loss_sum = 0
+        for x, y_true in data_loader:
+            #用神经网络进行预测
+            y_pre = net(x)
+            #计算损失
+            l = loss(y_pre, y_true)
+            # print(f'loss = {l}')
+            loss_num.append(l.item())
+            loss_sum += l
+            #清除之前的梯度
+            opt.zero_grad()
+            #进行反向传播，计算梯度
+            l.backward()
+            #更具bachward计算出的梯度更新参数
+            opt.step()  
+        l = loss(net(x), y_true)
+        print(f'epoch: {epoch + 1} ==> loss: {loss_sum / 100}')
+    print(net.layout1.weight, ' ', net.layout1.bias)
+    sns.lineplot(x = range(300), y = loss_num)
+    plt.show()
+```
+
+
+## 3.Softmax回归
+
+### 3.1Softmax数学原理
+
+二分类交叉熵公式：
+$$
+\text{BCE}(y, \hat{y}) = -\left[ y \log(\hat{y}) + (1 - y) \log(1 - \hat{y}) \right]
+$$
+
+多分类交叉熵公式：
+$$
+\text{CE}(y, \hat{y}) = -\sum_{i=1}^{C} y_i \log(\hat{y}_i)
+$$
+
+- $ y_i  \in \begin{Bmatrix} 0, 1 \end{Bmatrix}$：one-hut真是标签，只有第i维为1，其余都为0，表示该样本分类为i类。
+- $\hat{y}$：表示模型预测样本为第i类的概率大小，会被归一化。所有的$\hat{y}$相加等于1。
+- 公式：只有 $y_i$ 这一项不为零，所以公式的数值等于 $-y_i \log(\hat{y}_i)$ ，此时 $\hat{y}$ 越大，损失值越小，所以模型会尽可能地让 $\hat{y}$ 变大，从而提升了区分度。
+
+<img src="img/Softmax数学原理.png" alt="图片" style="zoom: 33%;" />
+
+**容易误解：** 交叉熵损失通常不能用于梯度下降，因为它不具有参数，但是它可以指导前面的全连接层（隐藏层）进行梯度下降。
+
+
+### 3.2 损失函数
+
+3个常用损失函数：
+1. $l(y, y') = \frac{1}{2}(y - y')^2$：均方损失，当权重距离真实权重很远的时候，梯度会比较大，可以加速学习，但同时也不稳定。
+2. $l(y, y') = |y - y'|$：绝对损失，不管权重距离真实权重有多远，梯度都是一个常数，学习速度可能没那么快，但是很稳定。当权重距离真实权重很近的时候，因为原点不可导，容易导致稳定性变差。
+3. $l(y, y') = \begin{cases} 
+|y - y'| - \frac{1}{2} & \text{if } |y - y'| > 1 \\
+\frac{1}{2}(y - y')^2 & \text{otherwise}
+\end{cases}$：Robust Loss，结合了两者的优点，是梯度下降整体变稳定。
+
+<img src="img/RobustLoss.png" alt="图片" style="zoom:33%;" />
+
+**RobustLoss比较常用**
