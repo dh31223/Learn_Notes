@@ -421,4 +421,167 @@ $$ \text{代入数值： } 52 \times 2 = 104 $$
 *   \( \frac{dL}{dw_2} \rightarrow \text{用于更新参数} \)
 
 
+## 4.正则化方法
+
+1. 损失函数添加正则项（范数惩罚），通常使用L1和L2正则项。
+- $\min \ell(\mathbf{w}, b) + \frac{\lambda}{2} \|\mathbf{w}\|^2$
+- $\min \ell(\mathbf{w}, b) + \lambda \|\mathbf{w}\|_1$
+2. Dropout正则化。
+- 放弃全连接层的某些神经元，以达到正则化的效果。（放弃掉的神经元梯度为0，权重无法更新，和范数惩罚效果差不多）
+- 没被放弃的神经元要进行相应的扩大，为了使整体的期望不变。
+$$
+x'_i = \begin{cases} 
+0 & \text{with probability } p \\
+\frac{x_i}{1-p} & \text{otherwise}
+\end{cases}
+$$
+>被放弃的直接变成0，没被放弃的，除1-p。整体数值权重不变。
+
+## 5.数据稳定性
+
+
+### 5.1引发梯度爆炸和梯度消失的原因
+
+$$
+\frac{\partial \ell}{\partial \mathbf{W}^t} = \frac{\partial \ell}{\partial \mathbf{h}^d} \frac{\partial \mathbf{h}^d}{\partial \mathbf{h}^{d-1}} \cdots \frac{\partial \mathbf{h}^{t+1}}{\partial \mathbf{h}^t} \frac{\partial \mathbf{h}^t}{\partial \mathbf{W}^t}
+$$
+
+>反向传播时，要用链式法则，也就是后面的权重的梯度会不断地连乘前面的权重，如果前面的权重大部分大于1的话，由于网络层数可能很深，当这么多层的权重乘在一起容易使后面的梯度变得异常大甚至无法用数据容器装载（溢出）。如果前面的权重都小于1并且比较小，则容易导致梯度消失，也就是梯度很小，几乎起不到学习的效果。
+
+例如：
+
+我们设有一个三层的网络结构：
+- 第一层：$h_1 = w_1x$
+- 第二层：$h_2 = w_2x$
+- 第三层：$\hat{y} = w_3 \cdot h_2$
+
+**前向传播过程省略**
+
+反向传播：
+
+链式法则：
+$$
+\frac{\partial L}{\partial w_1} = \frac{\partial L}{\partial \hat{y}} \cdot \frac{\partial \hat{y}}{\partial h_2} \cdot \frac{\partial h_2}{\partial h_1} \cdot \frac{\partial h_1}{\partial w_1}
+$$
+
+
+- $\frac{\partial L}{\partial \hat{y}} = \hat{y} - y = 24$
+- $\frac{\partial \hat{y}}{\partial h_2} = w_3 = 4$
+- $\frac{\partial h_2}{\partial h_1} = w_2 = 3$
+- $\frac{\partial h_1}{\partial w_1} = x = 1$
+
+
+这些都是链式法则要连乘的内容，这些是后面这些层的权重，而且权重都>1。
+
+**第一层的梯度会变成：**
+$$
+\frac{\partial L}{\partial w_1} = 24 \times 4 \times 3 \times 1 = 288
+$$
+
+>变成288了，这里只是3层，如果是100层的话，梯度很容易爆炸，当然，如果权重都特别小，也会造成梯度消失。
+
+
+### 5.2激活函数对反向传播的影响
+
+
+|**激活函数**|**对梯度影响**|**主要原因**|
+|---------|----------|-----------|
+|RuLU|如果权重初始化不到位，容易引发**梯度爆炸**，但是缓解了**梯度消失**。|正半轴导数为1，梯度完全由权重乘积决定；权重>1时连乘导致爆炸。|
+|Leaky ReLU / PReLU|比ReLU更稳定，轻微缓解爆炸风险。|负半轴有微小斜率（如0.01），避免神经元死亡，但正半轴仍为1，爆炸风险仍存|
+|Sigmoid|容易造成**梯度消失**，几乎不会**梯度爆炸**。|导数最大值仅0.25，且大部分区域导数接近0；连乘后梯度指数级衰减。|
+|Tanh|容易**梯度消失**，极少爆炸。|导数最大值1（在0处），但两端饱和趋近0；连乘后梯度仍会消失（除非权重非常大且输入一直在0附近）。|
+|Softmax（通常用于输出层）|本身不直接引起消失/爆炸，但配合交叉熵时梯度稳定|梯度形式为$p_i - y_i$，范围在[-1,1]，不受深层连乘影响。|
+
+
+**知识扩展：激活函数和参数初始化函数的搭配**
+|函数|适用场景|
+|-|-|
+|xavier_uniform_ / xavier_normal_|配合 sigmoid/tanh|
+|kaiming_uniform_ / kaiming_normal_|配合 ReLU|
+|normal_|简单的正态分布初始化|
+
+
+
+### 5.3梯度消失和梯度爆炸所带来的问题
+
+**梯度消失带来的问题：**
+
+- 梯度值会变成0，因为机器存储数据的精度有限，所以梯度太小了会变成0
+>对16位浮点数尤其严重
+
+-  梯度太小对训练没有进展
+-  梯度太小仅仅对距离输出层进的全连接层训练有效果，因为越往前，梯度变得越小。
+
+**梯度爆炸带来的问题：**
+
+- 值会超出值域
+>对于16位浮点数尤其严重
+
+- 对学习率异常敏感
+>如果学习率太大->大参数值->更大的梯度
+>如果学习率太小->学习没有进展
+
+### 5.4**如何让训练变得更加稳定**
+
+
+1. 将乘法变成加法，避免连乘
+>ResNet和LSTM
+
+2. 归一化
+>梯度归一化，梯度裁剪
+
+3. 选择合理的激活函数和合理的参数初始化
+
+
+
+**补充知识ont-hut编码：**
+
+
+>补充知识：one-hut热编码，用于将数据中的离散值变成bool值。例如：
+>原始列：颜色 = 红色、蓝色、绿色
+>one-hot之后：
+>颜色_红	颜色_绿	颜色_蓝
+>     0 		        1		    0           --------->表示绿色
+>  1	             0		    0	       --------->表示红色
+>  0	             0            1           --------->表示蓝色
+>  
+
+>要将DataFrame转化为Tensor，不能直接转化，要先把DataFrame转化为Numpy数组，因为DataFrame有行id和列名等Tensor所没有的东西，Tensor只表示数组，没有列名和行号之类的，而Numpy数组就是只有数值。用DataFrame.values可以转化为Numpy数组。
+
+增加维度之后对算力要求有没有提升？
+
+|情况|影响|建议|
+|----|----|----|
+|离散值很小（<50）|基本可以忽略|直接用one-hot|
+|离散值多（50~几百）|有点吃力|可以考虑用embedding，把一个高维向量压缩成稠密的低维向量|
+|离散值极多（>几千）|显著拖慢|必须用embedding或做特征工程|
+
+```python
+train_data = pd.get_dummies(train_data, dummy_na = True)
+test_data = pd.get_dummies(test_data, dummy_na = True)
+#dummy_na = True表示将空值区分开
+#因为 dummy_na=True 给每个原始列都生成了一个 _nan 列，如果原始数据中该特征没有缺失值，那个 _nan 列就全是 False，转成 float 后自然全是 0.0。
+```
+
+
+
+**补充Torch小知识：**
+
+```python
+# 将特征和标签按样本对齐，打包在一起
+dataset = TensorDataset(X, y)
+# 你可以在此设定批大小(batch_size)、是否打乱(shuffle)等
+data_loader = DataLoader(dataset, batch_size=2, shuffle=True)
+
+#激活函数的调用时从torch中调用，而不是torch.nn中调用。
+```
+
+>TensorDataset(X, y)将tensorX和y组合起来，组合成类似于DataFrame但是又比DataFrame更适合深度学习的数据结构，其中X是特征，y是标签。
+>DataLoader用来加载数据，按批次送入网络中学习。
+
+
+
+## 6.Kaggle房价预测实例
+
+
 
