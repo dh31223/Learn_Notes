@@ -15,7 +15,7 @@
 | b = a.reshape(...)|创建新的Tensor对象|如果内存不连续就创建新的内存空间|不一定，看是否创建新的内存空间|无|
 |b = a.clone()|创建新的Tensor对象|不共享|不影响|无|
 
-
+>`view()`只能作用域内存连续的对象，而`reshape()`能作用于所有的对象，如果内存连续就直接指向该内存，如果不连续就另外创建内存。
 
 
 ## 2.线性回归基础
@@ -534,7 +534,7 @@ $$
 
 
 
-**补充知识ont-hut编码：**
+**补充知识ont-hot编码：**
 
 
 >补充知识：one-hut热编码，用于将数据中的离散值变成bool值。例如：
@@ -582,6 +582,456 @@ data_loader = DataLoader(dataset, batch_size=2, shuffle=True)
 
 
 ## 6.Kaggle房价预测实例
+
+### 6.1补充StandardScaler归一化知识
+
+**StandardScaler归一化：**
+>StandardScaler中，是将每一列的数据进行归一化，写成正态分布的形式，每一个值对这一列的平均值差了几个标准差。
+
+**造成数据泄露的原因：**
+>如果错误的将测试数据进行fit_transform之后，这个transform对象就会存储测试集的均值和方差，如果再对训练数据进行transform的话，训练数据对应的列会使用测试数据对应的列的均值和方差进行归一化，也就是说训练数据中可以间接的反映出测试数据的均值和方差，这会造成数据泄露。
+
+**容易误解的地方：**
+>如果把测试集的标签和特征拆开也会造成数据泄露，因为即使没有标签，测试集的特征也已经泄露到训练集中，会导致模型评分虚高。
+>
+
+**标签是否要进行StandardScaler归一化：**
+
+需要使用归一化处理：
+
+1. 神经网络中依赖梯度下降来拟合曲线，其中要用到反向传播和链式法则，如果y_true特别大（房价预测等），那么对应的y_pre与y_true的值相差**可能**就会特别大，这个差值过大的话，就容易导致梯度爆炸
+2. 标签的跨度极大，也需要用归一化处理。
+
+不需要使用归一化处理：
+
+1. 树模型，树在分裂节点只关系**特征或标签的相对大小和排序，完全不关心绝对数值**。
+2. 分类任务，分类任务的标签是离散型，没必要归一化。
+
+
+**知识扩展：**
+```python
+net.eval()
+#让网络进入评估模式，此时不进行参数更新
+net.train()
+#让网络进行训练模式，此时进行参数更新
+```
+
+
+### 6.2 源代码
+
+```python
+import torch
+import pandas as pd
+import torch.optim as optim
+import torch.nn as nn
+from torch.utils.data import TensorDataset, DataLoader
+from sklearn.preprocessing import StandardScaler
+import numpy as np
+from sklearn.model_selection import train_test_split
+
+# 模型定义
+# =============================================================================
+
+class Model(nn.Module):
+
+    def __init__(self, in_features):
+        #调用父类的初始化函数
+        super().__init__()
+        #第一层线性层
+        self.layout1 = nn.Linear(in_features, 200)
+        #第一层参数初始化
+        nn.init.xavier_normal_(self.layout1.weight)
+        nn.init.zeros_(self.layout1.bias)
+        #第二层线性层
+        self.layout2 = nn.Linear(200, 100)
+        #第二层参数初始化
+        nn.init.xavier_normal_(self.layout2.weight)
+        nn.init.zeros_(self.layout2.bias)
+        #第三层线性层
+        self.layout3 = nn.Linear(100, 1)
+        #第三层参数初始化
+        nn.init.xavier_normal_(self.layout3.weight)
+        nn.init.zeros_(self.layout3.bias)
+        #Dropout防止过拟合
+        self.dropout = nn.Dropout(0.2)
+
+    def forward(self, x):
+        #前向传播，用tanh激活函数，并且每一层都是用dropout
+        x = torch.tanh(self.layout1(x))
+        x = self.dropout(x)
+        x = torch.tanh(self.layout2(x))
+        x = self.dropout(x)
+        x = self.layout3(x)
+        return x
+
+
+# 数据处理
+# =============================================================================
+
+#读取表格数据DataFrame
+train_data = pd.read_csv(r'data\train.csv')
+test_data = pd.read_csv(r'data\test.csv')
+
+# 提取特征和标签
+train_label = train_data.iloc[:, -1].values.reshape(-1, 1)
+train_feature = train_data.iloc[:, 1:-2]
+test_feature = test_data.iloc[:, 1:-1]
+
+# one-hot 编码（train + test 合并，保证列一致）
+#concat将两个DataFrame合并成一个
+all_feature = pd.concat([train_feature, test_feature], axis=0)
+#进行one-hot编码
+all_feature = pd.get_dummies(all_feature, dummy_na=True)
+
+#编码完之后再拆开
+n_train = train_feature.shape[0]
+train_feature = all_feature.iloc[:n_train, :]
+test_feature = all_feature.iloc[n_train:, :]
+
+# ===== 先切分，再 fit scaler（防止数据泄露）=====
+X_train, X_val, y_train, y_val = train_test_split(
+    train_feature, train_label,
+    test_size=0.2, random_state=42
+)
+
+# 特征标准化：只在训练集上 fit
+feature_scaler = StandardScaler()
+X_train = feature_scaler.fit_transform(X_train)
+X_val   = feature_scaler.transform(X_val)
+X_test  = feature_scaler.transform(test_feature)
+
+# label：log1p → 标准化（只在训练集上 fit）
+y_train = np.log1p(y_train)
+y_val   = np.log1p(y_val)
+
+label_scaler = StandardScaler()
+y_train = label_scaler.fit_transform(y_train)
+y_val   = label_scaler.transform(y_val)
+
+# 清理 NaN（零方差 one-hot 列导致）
+X_train = np.nan_to_num(X_train)
+X_val   = np.nan_to_num(X_val)
+X_test  = np.nan_to_num(X_test)
+
+# 转 tensor
+#要转成tensor才能送入dataset中转化问dataset数据结构，然后才能送入dataloader中
+X_train = torch.tensor(X_train, dtype=torch.float32)
+y_train = torch.tensor(y_train, dtype=torch.float32)
+X_val   = torch.tensor(X_val,   dtype=torch.float32)
+y_val   = torch.tensor(y_val,   dtype=torch.float32)
+X_test  = torch.tensor(X_test,  dtype=torch.float32)
+
+# 模型训练
+# =============================================================================
+
+batch_size = 100
+epochs = 500
+
+#初始化模型
+net = Model(in_features=X_train.shape[1])
+
+#转化为dataset，送入dataloader，方便读取batch_size条数据
+dataset_train = TensorDataset(X_train, y_train)
+dataloader_train = DataLoader(dataset_train, batch_size=batch_size, shuffle=True)
+
+#L2损失函数
+loss_fn = nn.MSELoss()
+#用向量法来稳定参数，缓解梯度爆炸
+optimizer = optim.Adam(net.parameters(), lr=0.0001, weight_decay=1e-4)
+
+#开始训练
+for epoch in range(epochs):
+    # ---- 训练 ----
+    #将net网络切换为训练模式
+    net.train()
+    loss_sum = 0
+    for x, y_true in dataloader_train:
+        y_pre = net(x)
+        l = loss_fn(y_pre, y_true)
+
+        optimizer.zero_grad()
+        l.backward()
+        #对梯度进行裁剪
+        torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)
+        optimizer.step()
+
+        loss_sum += l.item()
+
+    train_loss = loss_sum / len(dataloader_train)
+
+    # ---- 验证 ----
+    #将net网络切换为评估模式
+    net.eval()
+    with torch.no_grad():
+        val_pred = net(X_val)
+        val_loss = loss_fn(val_pred, y_val).item()
+
+    print(f"epoch {epoch+1:3d}  train_loss={train_loss:.6f}  val_loss={val_loss:.6f}")
+
+# 验证集 RMSLE
+# =============================================================================
+
+net.eval()
+with torch.no_grad():
+    val_pred = net(X_val).numpy()
+
+# 逆变换：标准化空间 → log 空间
+y_pred_log = label_scaler.inverse_transform(val_pred)
+y_true_log = label_scaler.inverse_transform(y_val.numpy())
+
+# RMSLE = log 空间里的 RMSE
+rmsle = np.sqrt(np.mean((y_pred_log - y_true_log) ** 2))
+print(f"\n验证集 RMSLE: {rmsle:.5f}")
+
+# 生成提交文件
+# =============================================================================
+
+net.eval()
+with torch.no_grad():
+    test_pred = net(X_test).numpy()
+
+# 逆变换：标准化空间 → log 空间 → 原始价格
+test_pred_log = label_scaler.inverse_transform(test_pred)   # log 空间
+test_pred_price = np.expm1(test_pred_log)                    # 原始价格
+
+# 组装提交文件（两列：Id, SalePrice）
+submission = pd.DataFrame({
+    'Id': test_data['Id'],
+    'SalePrice': test_pred_price.flatten()
+})
+submission.to_csv('submission.csv', index=False)
+
+print(f"提交文件已保存: submission.csv ({len(submission)} 条)")
+print('end')
+```
+
+**RMSLE评估公式：**
+$$
+\text{RMSLE} = \sqrt{\frac{1}{n} \sum_{i=1}^{n} \left( \log(p_i + 1) - \log(a_i + 1) \right)^2 }
+$$
+
+其中 $p_i$ 是预测价格，$a_i$ 是真实价格，$n$ 是样本数。
+
+
+
+
+### 6.3遇到的问题和解决方式
+
+1. 'int' object is not callable
+
+|问题|原因|解决|
+|-|-|-|
+|TensorDataset 报这个错|传入了 numpy 数组而非 torch.Tensor，numpy 的 .size 是 int 属性，PyTorch 内部把它当 .size(0) 调用了|torch.tensor(data, dtype=torch.float32) 转换|
+
+2. 梯度爆炸，loss = NaN
+
+|问题|原因|解决|
+|-|-|-|
+|训练中 loss 变 NaN|SGD + 深层 ReLU 无梯度裁剪，某个 batch 大误差 → 大梯度 → 权重暴涨 → 正反馈爆炸|① SGD 换 Adam ② 加 clip_grad_norm_ ③ ReLU 换 tanh|
+
+3. 特征中含有NaN
+|问题|原因|解决|
+|-|-|-|
+|train_feature has NaN|one-hot 列的稀有类别在训练集全为 0，方差 = 0，StandardScaler 做 (x-0)/0 → NaN|np.nan_to_num() 清掉，默认用0代替NaN|
+
+4. 初始化和激活函数不匹配
+|问题|原因|解决|
+|-|-|-|
+|tanh 用了 Kaiming init|Kaiming 的 gain=√2 是给 ReLU 的，tanh 用这个会导致输入方差偏大、神经元饱和|换成 xavier_normal_|
+
+5. 数据泄露问题
+|问题|原因|解决|
+|-|-|-|
+|StandardScaler 在切分前 fit|scaler 学到了验证集和测试集的均值/方差，验证分数虚高	|先 train_test_split，再 fit_transform（训练集），transform（验证/测试）|
+
+6. 严重过拟合
+|问题|原因|解决|
+|-|-|-|
+|train_loss=0.0002, val_loss=0.19|1168 条数据 vs 8 万参数，三层 200→100→1 太大|加 Dropout(0.2) + Adam weight_decay=1e-4|
+
+7. 欠拟合假象
+|问题|原因|解决|
+|-|-|-|
+|train=0.10, val=0.15，以为是欠拟合|其实是过拟合已缓解但模型到瓶颈，增加 epoch 只让 train 继续跌、val 不动|认清"数据承载力天花板"，不做无用功|
+
+
+## 7.在GPU中创建神经网络
+
+**在GPU中创建张量和神经网络**
+
+```python
+
+#在GPU创建张量
+#默认创建在CPU
+x = torch.tensor([1, 2, 3])
+print(x.device)#输出GPU
+#在GPU中创建数据
+y = torch.tensor([1, 2, 3], device = 'cuda')#表示在GPU创建y
+y = torch.tensor([1, 2, 3], device = 'cuda:0')#表示在第一张GPU创建y，通常个人计算机只有1张GPU
+
+#在GPU创建网络
+#方法1：
+device = torch.device("cuda")
+layer = nn.Linear(10, 20, device=device)   # 参数直接在GPU上
+#方法2：
+class MyModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        #在CPU创建的线性层
+        self.fc = nn.Linear(10, 20)
+        #用to函数挪到GPU
+        self.to("cuda")   # 将整个模型（包括刚创建的Linear）移到GPU
+
+```
+
+
+## 8.卷积神经网络
+
+### 8.1卷积数学原理理解
+
+**视频讲解：**
+>https://www.bilibili.com/video/BV1VV411478E?t=1599.0
+
+**数学公式：**
+$$
+(f * g)(t) = \int_{-\infty}^{\infty} f(\tau) g(t - \tau) \, d\tau
+$$
+
+
+卷积处理的问题：
+>在一个系统中
+>1. 系统的输入不稳定。$f(x)$
+>2. 系统的输出稳定。$g(x)$
+>3. 需要求系统的剩余量$(f * g)(t) = \int_{-\infty}^{\infty} f(\tau) g(t - \tau) \, d\tau$
+
+**在卷积神经网络中的直观理解：**
+
+>1. 卷积核规定了周围像素点对该像素点会有什么样的影响。
+>2. 一个像素点会如何试探周围的像素点（过滤器）。
+
+也就是将一个卷积核大小的像素块按照卷积核的具体数值进行压缩提取特征，以达到提取局部特征的效果，然后再送给神经网络进行判断。
+
+
+### 8.2 卷积层
+
+**卷积核：**
+
+- 卷积核就像是**一组不同形状的筛子。**
+- 训练过程就是不断调整卷积核，也就是不断调整筛子的大小，让某种**特征**能通过。
+- 区分不同图片（猫 vs 狗）时，不是单个筛子直接说出答案，而是所有筛子过滤后的结果（特征图）**组合**起来，再由最后的分类器（全连接层）判断。
+
+**填充与步幅：**
+
+1. 填充：
+>在输入矩阵的周围n圈填充0
+
+作用：
+>1. 控制输出特征图的空间尺寸。
+>2. 保留图像边缘和角落的特征（这些地方被扫描的次数更少）。
+>3. 保持特征图中心与边缘的平衡（中间部分往往容易被多次扫描，填充之后可以缓解“中心偏向”）。
+>4. 配合步长精确控制下采样，可以配和步长来精准控制输出的矩阵大小。
+
+
+2. 步幅：
+
+>每次扫描移动的步数
+
+**卷积核大小与卷积层输入输出的关系：**
+
+<img src="img/卷积核大小与该卷积层输入输出的关系.png" alt="图片" style="zoom:33%;" />
+
+> **输入通道数（层数）要和卷积核的通道数（层数）相同，然后卷积核的个数，决定了该卷积层的输出通道数（层数）。**
+> 
+
+
+**卷积层对相对位置非常敏感**
+
+>卷积层对于位置信息非常敏感。
+>例如：让CNN区分数字6和数字9，因为CNN只能提取局部特征，所以在CNN中，这两个数字就是一个圈圈加一个勾勾。如果CNN对位置信息不敏感的话，也就无法区分圈圈和勾勾的相对位置，自然无法分辨6和9。所以对于CNN这种提取局部信息来判断图片的模型，必须对每个特征的相对位置敏感。
+
+**不同卷积层所提取的特征之间的区别**
+
+- **底层卷积：**它会去匹配一些非常简单的模式，比如明暗交界线（脸和背景的边界）、45度方向的线条（眉毛的角度）、小圆点（可能是瞳孔）。这些特征在猫脸、车轮上也可能出现，所以非常通用。
+- **中层卷积：**在底层的基础上组合，开始匹配局部部件：一个弧形加一个圆点（眼睛）、两条短线加一个空隙（嘴巴）、一个半圆（耳朵）。这些已经和人脸相关了。
+- **高层卷积：**感受野覆盖了几乎整张脸。它匹配的是完整的脸型、各个部件之间的全局配置（两只眼睛在鼻子上面，嘴巴在下面）。甚至能区分“正面脸”还是“侧脸”。这一层的一个卷积核可能只对“闭着的左眼”有强烈响应，另一个只对“微笑的嘴”有响应。
+
+**数学原因**：
+
+1. **感受野随层数指数增长**
+	假设每层都是3×3卷积，步长1，那么：
+	- 第1层输出上的1个像素，看到输入3×3区域。
+	
+	- 第2层输出上的1个像素，看到上一层3×3区域，每个又对应输入3×3，所以实际看到输入5×5区域。
+	
+	- 第3层看到7×7，依此类推。
+	
+
+因此，**高层卷积的一个神经元，其感受野覆盖了原始图像的很大一部分。**它能“看到”全局布局。
+
+
+
+**Conv2d和Conv3d**
+>Conv2d就是处理一张图片，Conv3d就是比图片多一个维度，这个维度可以是时间（视频）也可以是空间（核磁共振3D图，就是多个剖面图）。
+
+
+### 8.3 池化层
+
+
+
+**池化层的作用：**
+
+>卷积层对位置信息比较敏感，所以能区分6和9。但是为了防止**过拟合**，我们需要引入池化层。
+
+>卷积层用来区分6和9，而池化层用来区分不同人写的9。也就是说卷积层用来拟合，池化层用来泛化也就是防止过拟合。可以增加鲁棒性。
+
+>池化层也具有填充和步幅，池化层没有可学习参数。
+
+**池化层核心思想：**
+
+>**在一个小局部窗口内，只保留最强烈的激活信号，而忽略它具体在这个窗口的哪个位置。**
+>**局部窗口内取最大/平均，主动丢弃精确位置信息，换来对小位移和形变的容忍。**
+
+**池化层分类：**
+
+1. 最大池化层：
+
+>在池化层照射的区域内选取最大的数值代替该区域。
+
+<img src="img/最大池化层.png" alt="图片" style="zoom:33%;" />
+
+2. 平均池化层：
+
+>在池化层照射的区域内选取平均值来代替该区域。
+
+
+直观对比：
+<img src="img/池化层两种类别直观对比.png" alt="图片" style="zoom:33%;" />
+
+### 8.4 LeNet
+
+
+
+<img src="img/LeNet.png" alt="图片" style="zoom:33%;" />
+
+> 其中池化层是平均池化层。
+
+
+**卷积神经网络设计思想**
+>将一个图片的长宽信息不断地进行压缩，然后将信息压缩进不同的通道中（层数），最后将通道数高且长宽低的数据整理成矩阵或者向量，传入多层感知机中进行收尾学习。
+>
+>整体趋势是通道增加而长宽减少。
+
+**卷积神经网络设计思想提炼：**
+
+>**通过交替的卷积和池化（或步长卷积），逐步压缩空间尺寸、扩张通道数，从而将低级空间特征抽象为高级语义特征；最后根据任务决定——分类任务常用全连接层或全局平均池化输出类别，而检测/分割任务则保留空间维度进行逐像素预测。**
+
+
+### 8.5 AlexNet
+
+**容易误解的数学知识：**
+>**凸问题**通常存在这种特性：局部最小值 = 全局最小值
+>**凹问题**通常存在这种特性：局部最大值 = 全局最大值
+>真正让AI领域头疼的是非凸非凹的问题，也就是**非凸问题**，这类问题通常局部最优解 ！= 全局最优解，所以容易让AI学习陷入到鞍点和局部最小值点卡住。鞍点问题能通过判断奇异值的正负性来判断是不是鞍点，局部最小值往往还没有很好的解决办法，但是工程领域中也认为局部最优解也可以接受，因为他能满住需求，同时还可以防止过拟合。
 
 
 
