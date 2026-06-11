@@ -1472,3 +1472,38 @@ ResNet的一个残差块是 $g(x) = f(x) + x$。反向传播时，从输出 $g$ 
 
 
 
+### 8.11 Kaggle图片分类竞赛
+
+
+**1.将图片转化为Tensor数据**
+
+
+```python
+from torchvision import transform
+
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),         # 统一尺寸
+    transforms.ToTensor(),                 # 自动转成 (C, H, W)，值归一化到 [0,1]
+])
+
+tensor = transform(Image.open("images/0.jpg"))  # shape: (3, 224, 224)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
