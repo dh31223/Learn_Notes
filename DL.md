@@ -4,6 +4,11 @@
 
 ## 1.torch基础
 
+**辅助函数**
+
+>```dir()```函数能让我们知道包和包内的函数
+>```help()```函数能让我们知道每个包内的函数如何使用
+
 
 ### 1.1 reshape与view的区别
 
@@ -16,6 +21,239 @@
 |b = a.clone()|创建新的Tensor对象|不共享|不影响|无|
 
 >`view()`只能作用域内存连续的对象，而`reshape()`能作用于所有的对象，如果内存连续就直接指向该内存，如果不连续就另外创建内存。
+
+### 1.2 数据读取
+
+**OS包读取文件路径**
+
+- **```os.listdir(dir_path)```将dir_path中的文件名以字符串列表的形式返回。**
+
+```python
+#导入包
+from PIL import Image
+import os
+#路径
+img_path = r'data'
+#把该目录的所有文件以列表的形式返回
+img_path_list = os.listdir(img_path)
+#输出相关信息
+print(img_path_list)
+print(img_path_list[0])
+print(type(img_path_list))
+#输出如下：
+#['cifar-10-batches-py', 'cnn_demo_image.png', 'Kaggle_First_Project']
+#cifar-10-batches-py
+#<class 'list'>
+```
+
+- **```os.path.join(img_dir, img_path)```将img_dir和img_path拼接起来。**
+
+```python
+import os
+img_dir = r'data'
+img_path = r'cnn_demo_image.png'
+path = os.path.join(img_dir, img_path)
+print(path)
+#输出 data/cnn_demo_image.png
+```
+
+
+
+**Dataset类如何重定义**
+
+**自定义Dataset类必须重写的三个函数**
+
+- ```__init__()```初始化函数。
+- ```__getitem__()```索引函数
+- ```__len__()```获取长度函数
+
+```python
+from PIL import Image
+import os
+from torch.utils.data import Dataset
+#创建该类
+class imgdataset(Dataset):
+    #初始化
+    def __init__(self, root_path, label_path):
+        #获得根目录
+        self.root_path = root_path
+        self.label_path = label_path
+        #获得路径
+        self.path = os.path.join(root_path, label_path)
+        #获得该路径下的文件名列表 [str, str, str, ...]
+        self.img_path = os.listdir(self.path)
+        
+
+    def __getitem__(self, idx):
+        #根据输入的idx找到对应的文件名
+        img_name = self.img_path[idx]
+        #将文件名填入路径中，找到该文件的准确路径
+        img_path = os.path.join(self.path, img_name)
+        #打开图片
+        img = Image.open(img_path)
+        #返回label
+        label = self.label_path
+        #__getitem__通常返回特征和标签，在这里是img和label
+        return img, label
+
+    def __len__(self):
+        return len(self.img_path)
+    
+
+def main():
+    #实例化一个dataset
+    ant_dataset = imgdataset(r'hymenoptera_data\train', r'ants')
+    #获取第一个dataset
+    img, label = ant_dataset[0]
+    img.show()
+    print(label)
+
+if __name__ == '__main__':
+    main()
+```
+
+
+**冷知识**
+```python
+#dataset之间可以进行相加拼接
+train_dataset = ants_dataset + bees_dataset
+```
+
+
+
+### 1.3TensorBoard的使用（可视乎loss函数）
+
+**导入TensorBoard包**
+```python
+from torch.utils.tensorboard import SummaryWriter
+```
+
+
+
+**SummaryWrite类**
+
+>类似于可视化包，用于观察训练时loss下降情况。
+
+**add_scalar()**
+
+```python
+#导入包
+from torch.utils.tensorboard import SummaryWriter
+#实例化SummaryWriter对象
+write = SummaryWriter('logs')
+#绘制图像
+for i in range(100):
+    write.add_scalar('y = x', i, i)
+#关闭write
+write.close()
+```
+
+>运行完之后会生成一个logs文件夹，接下来需要在目录中运行如下指令
+
+```bash
+tensorboard --logdir=logs
+```
+
+>然后会输出一个端口路径，打开即可查看可视化图像。
+
+
+### 1.4Transforms类（Image预处理工具包）
+
+
+ **Transforms通常用于对图像进行预处理和数据增强**
+
+ - **统一输入尺寸**：将不同大小的图片缩放、裁剪到模型所需的固定尺寸（如``` Resize```、```CenterCrop```）。
+ - **转为张量**：将 PIL 图像或 NumPy 数组转换为 PyTorch / TensorFlow 张量，并调整数据范围（如 ```ToTensor``` 将 [0,255] 转为 [0,1]）。
+ - **数据增强**：在训练阶段通过随机变换（如随机翻转、旋转、色彩抖动、仿射变换等）生成多样化的样本，提升模型泛化能力，减少过拟合。
+ - **格式转换**：如灰度化（Grayscale）、转换为 PIL 图像等。
+
+
+```python
+from torchvision import transforms
+import os
+from PIL import Image
+#构建文件路径
+root_path = r'hymenoptera_data\train'
+label_path = r'ants'
+img_name = r'0013035.jpg'
+img_path = os.path.join(root_path, label_path, img_name)
+print(img_path)
+#导入图像文件
+img = Image.open(img_path)
+print(img)
+#实例化工具对象
+t = transforms.ToTensor()
+#进行转换
+img_tensor = t(img)
+print(img_tensor.shape)
+print(img_tensor)
+```
+
+
+**Compose函数**
+
+>```Compose()```可以将参数中的操作一次性执行完，也就是他可以组合多个工具，形成一个超级工具类。前面的```ToTensor()```只能算是一个转化为Tensor的工具，**而Compose可以组合多个工具。**
+
+```python
+from torchvision import transforms
+# 定义一个由 Compose 包装的预处理流程
+transform = transforms.Compose([
+    transforms.Resize(256),          # 步骤1: 将图像最短边缩放到256像素
+    transforms.CenterCrop(224),      # 步骤2: 从图像中心裁剪出224x224的区域
+    transforms.ToTensor(),           # 步骤3: 将PIL图像或NumPy数组转换为PyTorch张量
+    transforms.Normalize(            # 步骤4: 用均值和标准差标准化张量
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+])
+# 假设有一张图片 'img'
+# transformed_img = transform(img)  # 一次性完成所有步骤
+```
+
+
+
+**Transforms常用的工具类**
+
+- ```ToTensor()```将Image对象转化为Tensor。
+- ```ToPILImage()```讲Tensor或者Ndarray对象转化为Image对象。
+- ```Normalize()```对一个Tensor的image进行归一化。
+```python
+from torchvision import transforms
+
+transform = transforms.Compose([
+    transforms.ToTensor(),           # 将 PIL 图像转为 [0,1] 的张量
+    transforms.Normalize(            # 标准化
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+])
+#mean表示每个通道的均值，std表示每个通道对应的方差。
+#mean[0]和std[0]表示第0个通道的均值和方差，然后这个通道的所有值对这个均值和方差进行归一化。
+# 假设 img 是一个 PIL Image 或 np.array
+tensor_img = transform(img)   # 输出张量，每个通道满足近似 N(0,1) 分布
+```
+
+- ```Resize()```把Image对象重塑为指定大小。
+
+
+
+### 1.5DataLoader类（数据迭代器）
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 ## 2.线性回归基础
@@ -1472,26 +1710,161 @@ ResNet的一个残差块是 $g(x) = f(x) + x$。反向传播时，从输出 $g$ 
 
 
 
-### 8.11 Kaggle图片分类竞赛
+### 8.11 数据增广（图片增广）（数据增强）
 
 
-**1.将图片转化为Tensor数据**
+**数据增广：通过对已有数据进行变换，让数据具有更多的多样性，从而提升模型的泛化能力。**
 
+>如果是语言数据，我可以加入背景噪音来达到数据增强的效果。
+>如果是图像数据，我可以通过改变图像颜色和形状达到数据增强的效果。
 
-```python
-from torchvision import transform
+通常只有在训练的时候才会进行数据增强，测试的时候不会，可以将数据增强看成正则化。
 
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),         # 统一尺寸
-    transforms.ToTensor(),                 # 自动转成 (C, H, W)，值归一化到 [0,1]
-])
-
-tensor = transform(Image.open("images/0.jpg"))  # shape: (3, 224, 224)
-```
-
+**图像中的数据增强**
+- **翻转：**上下翻转、左右翻转。
+- **切割：**从原图中切割一部分下来，然后拉伸到对应的尺寸。
+- **颜色：**改变原图的颜色和色温。
 
 
 
+### 8.12 模型微调和迁移学习（最重要的技术）
+
+
+**1. 迁移学习：别从零发明轮子**
+
+深度学习里，训练一个大型神经网络就像训练一个婴儿——你得给他看几百万张猫、狗、汽车、飞机……他才能慢慢学会认东西。这个过程要花好几天、用好几百块显卡、电费都能把账本烧个洞。
+
+聪明的办法是：**直接拿别人已经训练好的模型**。比如谷歌、Meta这些大公司已经用海量数据训练好了一个叫“ResNet”或者“BERT”的家伙。它虽然没见过你手头的问题，但它已经学会了很多通用的本领——比如“边缘检测”、“纹理识别”、“词语之间的关系”。
+
+现在你要做的是：
+- 把它的“大脑”拿过来，冻结前面90%的层（保留那些通用能力）。
+- 只替换最后一两层（原来它输出1000类物体，你现在只要输出猫和狗两类）。
+- 用你的少量数据（比如100张猫狗照片）去训练这最后两层。
+
+这就像你去参加“速成物理竞赛”——不需要再自己推导牛顿定律，直接站在牛顿、麦克斯韦的肩膀上，只学那最后几道高级题的解法。
+
+**迁移学习的关键**：源任务（别人的大数据任务）和目标任务（你的小任务）要有点相似。用“自行车经验”学“摩托车”很管用，但用来学“炒菜”就悬了。
+
+**2. 模型微调：把别人的知识拧一拧**
+
+微调是迁移学习的一种更细致的玩法。
+
+别人那个训练好的模型，就像一把通用的瑞士军刀——能切、能锯、能开瓶，但可能不够锋利。你的任务需要它在“切奶酪”这个动作上特别精准。怎么办？
+
+你不会重新打一把刀，而是**把刀刃再磨一磨**。
+
+
+**例如：**
+
+某神经网络：
+
+>输入图像 → [卷积层组1] → [卷积层组2] → ... → [卷积层组5] → [全局池化] → [全连接层（1000个神经元）] → Softmax → 输出1000类概率
+
+- **前5个卷积层组**：学会了边、角、纹理、形状、物体部分（车轮、眼睛）等**通用特征**。
+- **最后的全连接层**：把通用特征组合起来，专门识别 ImageNet 里的1000类（比如“金毛犬”、“校车”）。
+
+**迁移学习（极少数据，每类5张图）的操作**
+
+1. **删除原有的全连接层**（那1000个神经元）。
+2. **创建一个新的全连接层**，它的输出维度等于你任务里的类别数（比如2类：猫和狗）。这个新层的参数是随机初始化的。
+3. **冻结前面所有卷积层组**（设置 `layer.trainable = False`）。
+4. **只训练这个新全连接层**（设置新层 `trainable = True`）。
+
+**结果**：
+- 前面的卷积层参数**一个字都没变**——它们还是原来识别“车轮”、“眼睛”的权重。
+- 只有最后一层那几千个参数（比如 `2048×2`）被你的5张图片训练了。
+- 训练结束后的模型：输入一张图 → 前面冻结的卷积层提取通用特征（例如“毛茸茸”、“两只耳朵”） → 新全连接层学习如何把这些特征映射到“猫”或“狗”的得分。
+
+**所以迁移学习对原来网络做的改动是：**  
+**切掉原分类头，换上一个新分类头，然后只训练这个新头。原来的身体纹丝不动。**
+
+**模型微调（数据较多，每类>100张）的操作**
+
+1. 保留模型所有层（包括原分类头，或者也换一个新头）。
+2. **不解冻所有层**（或者部分解冻，比如只解冻最后几个卷积块）。
+3. 设置一个**很小的学习率**（比如原始训练学习率的 1/10 或更小）。
+4. 用你的数据继续训练所有（或选定的）层。
+
+**结果**：
+- 原来的卷积层参数会发生微小的变化，从“通用特征”向“任务特有特征”偏移。
+- 新分类头（如果有替换）快速学习映射。
+
+**4. 极少数数据怎么办？（“几乎为零”）**
+
+如果每类只有1-2张图，连训练新分类头都危险。这时候更极端的做法是：
+- 把预训练模型当做一个固定的**特征提取器**。
+- 对每张图，提取倒数第二层的特征向量（比如2048维的向量）。
+- 用这些特征向量做**近邻分类（KNN）**或者直接算余弦相似度。整个过程中没有任何“训练”发生，网络参数完全不变。
+- 这也属于迁移学习的一种，只是“改动”为零——你只是用了它的输出，连最后一层都没加。
+
+**5. 总结表（费曼喜欢表格）**
+
+| 方法 | 训练数据量 | 对预训练模型层的改动 | 哪些参数被更新 |
+|------|------------|----------------------|----------------|
+| **迁移学习（特征提取）** | 极少（每类<10张） | 删除原分类层，新增分类层；冻结所有原层 | 只有新分类层的参数 |
+| **部分微调** | 中等（每类10-100张） | 冻结前几个卷积块，解冻后几个块 + 新分类头 | 后几个块 + 新分类头的参数 |
+| **微调（全部层）** | 较多（每类>100张） | 不解冻任何层，或部分解冻 | 所有层（或选定的层），用小学习率 |
+
+**6. 费曼的总结（带点小幽默）**
+
+迁移学习就像**借大脑**——别人学了一辈子的常识，你直接拿来用，只换最后一个“输出单元”去决定“这是披萨还是不是披萨”。
+
+模型微调就像**借大脑并给它做个小手术**——不是换最后一个单元，而是轻轻拧一下前额叶的几根神经，让它更擅长分辨“芝加哥深盘披萨”和“那不勒斯薄底披萨”。
+
+如果你手头数据特别少（比如10张图片），就用迁移学习（只训练最后一层），防止过拟合（别把偶然的噪点当真理）。  
+如果数据中等（比如1000张），就微调所有层，但学习率要小。  
+如果数据超大（比如100万张），那你就可以从零开始训练——但为啥呢？你又不是没脑子借用。
+
+最后记住：**好的科学家从不去重新发现万有引力，他们只负责在引力上面荡秋千**。迁移学习和微调，就是让你在深度学习里荡得又快又稳的工具。
+
+
+
+总结：
+>模型微调：用一个极小的学习了对所有参数进行微调也可以只调整部分参数。
+>迁移学习：前面所有的网络层的参数都不去修改，最后修改一整个输出层。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## 9. 序列模型
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## 10.三个实战项目
+
+
+
+### 10.1 CIFAR-10图像分类
 
 
 
