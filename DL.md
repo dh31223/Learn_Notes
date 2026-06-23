@@ -285,6 +285,21 @@ tensor_img = transform(img)   # 输出张量，每个通道满足近似 N(0,1) �
 >**shuffle参数**：告诉发牌器，是否洗牌（打乱数据顺序）
 >**drop_last参数**：如果有100张牌，每次发3张，必定会余1张牌，那么当drop_last=True时会抛弃（drop）最后一张牌，当drop_last=False时不抛弃最后一张牌。
 >**num_workers参数**：工作线程数，如果工作量太大可以通过增加num_workers来减少工作时间。
+>**pin_memory = True参数**：把数据锁在CPU固定内存内，往GPU拷贝的时候更快，配合```.to(m_device, non_blocking=True)```（锁定存储数据的内存页，不会被替换到磁盘中），效果更佳。
+>**persistent_workers = True参数**：（避免每个epoch都重开进程）
+>**prefetch_factor = 4参数**：预获取更多batch的数据，减少GPU等待时间，默认2。
+
+```python
+train_dataloader = DataLoader(
+    train_dataset,
+    batch_size=batch_size,
+    shuffle=True,
+    num_workers=4,
+    pin_memory=True,
+    persistent_workers=True,
+    prefetch_factor=4
+)
+```
 
 
 ```python
@@ -654,6 +669,7 @@ model.load_state_dict(torch.load(path))
 
 **`RandomVerticalFlip`**  
 随机垂直翻转  
+
 - `p` (float): 翻转概率，默认 0.5  
 
 **`RandomRotation`**  
@@ -1811,6 +1827,33 @@ if __name__ == '__main__':
 ```
 
 
+### 2.5 激活函数
+
+> 激活函数为神经网络引入**非线性**。如果没有激活函数，多层线性变换的复合仍然是线性变换——网络再深也等价于一层。激活函数让网络能表达"满足条件就激活，否则不激活"这种复杂模式。
+
+| 激活函数 | 公式 | 特点 | 缺点 |
+|:---|:---|:---|:---|
+| **Sigmoid** | $$\sigma(x) = \frac{1}{1 + e^{-x}}$$ | 输出 (0, 1)，平滑可导，适合二分类输出层 | ① 梯度消失：两端导数趋近 0，深层网络梯度回传困难 ② 输出非零均值（0.5 中心），导致下一层输入全为正，收敛慢 ③ exp 运算昂贵 |
+| **Tanh** | $$\tanh(x) = \frac{e^x - e^{-x}}{e^x + e^{-x}}$$ | 输出 (-1, 1)，零均值中心，比 Sigmoid 收敛更快 | ① 仍有梯度消失问题（两端导数为 0）② exp 运算昂贵 ③ 深层网络中梯度比 Sigmoid 大但依然会衰减 |
+| **ReLU** | $$f(x) = \max(0, x)$$ | ① x>0 时导数为 1，**彻底解决正半轴梯度消失** ② 计算极简（一个比较操作）③ 稀疏激活：负值直接为 0，网络更稀疏、泛化更好 | ① **Dead ReLU**：输出恒为 0 的神经元梯度为 0，权重永不更新。常见原因：学习率过大 / 偏置初始化过负 ② 输出非零均值 ③ 负半轴信息完全丢弃 |
+| **Leaky ReLU** | $$f(x) = \max(\alpha x, x)$$，α 取 0.01 | ① 负半轴保留微小梯度（αx），解决 Dead ReLU ② 保留 ReLU 的正半轴优势 | ① α 是超参数，需手动设定 ② 负半轴梯度恒为 α，不如可学习的灵活 ③ 实际效果不一定优于 ReLU |
+| **PReLU** | $$f(x) = \max(\alpha x, x)$$，α **可学习** | α 通过反向传播学习，每个通道可不同，比 Leaky ReLU 更灵活 | ① 增加少量参数 ② 训练不稳定时 α 可能学到奇怪的值 |
+| **ELU** | $$f(x) = \begin{cases} x & x > 0 \\ \alpha(e^x - 1) & x \leq 0 \end{cases}$$ | ① 负半轴输出平滑（指数衰减而非线性截断）② 输出均值接近 0，加速收敛 | ① exp 运算比 ReLU 慢 ② α 是超参数 |
+| **SiLU / Swish** | $$f(x) = x \cdot \sigma(x) = \frac{x}{1+e^{-x}}$$ | ① **非单调、平滑**：x<0 时不会像 ReLU 硬截断 ② 自门控（self-gated）：用 Sigmoid 控制信息通过量 ③ 深层网络中常优于 ReLU | ① 计算比 ReLU 复杂（含 Sigmoid）② 不是所有任务都优于 ReLU |
+| **GELU** | $$f(x) = x \cdot \Phi(x)$$，Φ 是标准正态 CDF | ① 平滑的"随机正则化"：以概率形式决定激活，而非硬阈值 ② **Transformer 默认激活函数**（BERT, GPT 等）③ 近似公式：$$0.5x(1+\tanh(\sqrt{2/\pi}(x+0.044715x^3)))$$ | ① 计算比 ReLU 复杂得多 ② 推理时可优化但训练时开销大 |
+| **Softmax** | $$\text{Softmax}(z_i) = \frac{e^{z_i}}{\sum_{j=1}^{K} e^{z_j}}$$ | ① 输出 (0, 1) 且**所有输出之和为 1**，可解释为概率分布 ② 指数运算放大差异，利于分类决策 ③ 与交叉熵损失天然配合 | ① 仅用于输出层（中间层不用）② 对异常值敏感（指数放大）③ 配合交叉熵时，梯度 = y_pred - y_true，极易计算 |
+
+**核心对比速记：**
+
+| 问题 | 解决方案 |
+|:---|:---|
+| 梯度消失（Sigmoid/Tanh 两端饱和） | ReLU（正半轴导数=1） |
+| Dead ReLU（负值被永久杀死） | Leaky ReLU / PReLU / ELU |
+| 输出非零均值（偏移下一层输入） | Tanh（零中心）/ ELU / BN 层 |
+| 需要平滑激活（概率解释 + 深层表现） | GELU（Transformer）/ SiLU（ConvNeXt 等） |
+| 多分类输出 | Softmax |
+
+
 ## 3.Softmax回归
 
 ### 3.0 Softmax激活函数公式
@@ -2924,8 +2967,7 @@ $$
 
 >**通常用于很深的神经网络，防止链式反应导致梯度变小。**
 
-
-
+**注意：**使用了BN层的卷积层可以不使用偏置bias。
 
 
 ### 8.10 ResNet（残差网络）（很常用）
@@ -2965,6 +3007,8 @@ ResNet的一个残差块是 $g(x) = f(x) + x$。反向传播时，从输出 $g$ 
 就算 $\partial f / \partial x$ 很小（甚至为零），那个 **+1** 依然存在。梯度就像水管里的水，除了那条容易堵塞的小管子（$f(x)$ 路径），旁边还有一根**粗直的备用管道**（恒等映射），水永远可以通畅地流回去。
 
 >无论梯度有多小，都有一个1可以兜着。
+
+**实际使用时：**要先将g(x)+x然后在将其送入激活函数中一起激活。
 
 
 
@@ -3145,25 +3189,730 @@ ResNet v2（2016年）提出了另一种顺序：BN → Activation → Conv。�
 ## 9. 序列模型
 
 
+### 9.1 数学理解
+
+**之前的模型都是独立的随机变量，即每一个样本之间没有任何关系，可以被随意打乱顺序。**
+
+**序列模型的每一个样本是不独立的随机变量，也就是说样本之间的顺序也是信息的一部分，不能被随意打乱。**
+
+
+
+**为了让模型能理解元素之间的顺序关系，我们需要用贝叶斯公式来表示。**
+
+**有两种数学方案可以实现序列模型**
+
+1. 马尔科夫
+
+<img src="img/马尔可夫.png" alt="图片" style="zoom:33%;" />
+
+> 假设当前数据之和前t个数据有关，那么求当前数据的方式就变成了在已知前t个的情况下进行预测下一个数据。
+>
+> 因为预测数据的时候是依据固定前t个数据，**我们可以把这t个数据以特征的形式送入线性模型中（多层感知机），然后用输出的结果来进行预测下一个数据。**
+
+
+
+2. 潜变量模型
+
+<img src="img/潜变量模型.png" alt="图片" style="zoom:33%;" />
+
+
+>h是潜变量（隐变量），它代表前面所有数据对当前数据影响的总和，h和x是同时进行迭代更新的。
+>
+>例如：**已知h和x是求h\`和x\`，我们先通过x和h来求得h\`，然后根据h\`和x来计算x\`，此时进行了两次计算，也可以看成是两个模型。**
+
+
+### 9.2 RNN 
+
+
+#### 9.2.1 **RNN是潜变量自回归模型**
+
+
+>Dense：稠密网络，全连接网络。
+
+<img src="img/RNN具体原理.png" alt="图片" style="zoom:33%;" />
+
+
+**更新隐藏状态h：**
+
+h_t = tanh(W_hh · h_{t-1}  +  W_xh · x_t  +  b_h)
+y_t = W_hy · h_t + b_y
+
+
+>就两行。拆开看：
+>第一行：新的记忆 = tanh(旧记忆经过线性变换 + 新输入经过线性变换)。tanh 是激活函数，把值压>到 [-1, 1]之间，防止记忆在循环中爆炸。
+>第二行：从当前记忆输出预测结果。比如情感分类就是输出「正面/负面」的概率。
+>W_hh、W_xh、W_hy 是三组权重矩阵。每一步用的 W 是完全一样的——这就是「循环」的含义。
+
+
+
+**根据记忆h_t-1和当前的输入x_t来更新现在的记忆h_t，然后通过更新之后的记忆h_t来计算预测的y_t+1，然后损失函数loss就是预测的y_t+1和真实的x_t+1之间的差值（训练过程是有每一个真实的x），然后进入下一轮更新，下一轮h_t+1的更新用真实的x_t+1来更新。以此类推。**
+
+>「用真实的 x_{t+1} 来算 h_{t+1}」——这个完全正确，而且很多人第一次学 RNN
+会漏掉这一点。训练的时候，不管模型预测了什么，下一步的输入永远是真实的上一个词。这有个名字叫 teacher
+forcing——老师强行把正确答案塞回去，不让模型在自己的错误上越跑越偏。
+
+
+#### 9.2.2 **RNN的4种工作模式**
+|模式|叫什么|干什么|例子|
+|-|-|-|-|
+|每一步都输出，输出的是下一个词，预测下一个词|many-to-many（语言模型）|y_t预测x_t+1|GPT训练、文本生成、问答|
+|只看最后一步输出|many-to-one|看完整个序列，给一个判断|情感分类、垃圾邮箱检测|
+|生成一段序列|one-to-many|根据一个词生成一段话|文本生成|
+|对词进行分类|many-to-many|根据一段序列生成对应的一段序列|Tag生成|
 
 
 
 
 
+#### 9.2.3 如何衡量一个模型的好坏（困惑度）
+
+
+<img src="img/困惑度.png" alt="图片" style="zoom:33%;" />
+
+
+>困惑度就是对交叉熵去e指数，把交叉熵损失的值扩大。
+
+#### 9.2.4 梯度剪裁
+
+
+**RNN的梯度回传的时候，每一轮都要乘W_hh，所以很容易梯度爆炸。**
+
+**可以有效预防梯度爆炸**
+
+
+**具体如何剪裁：**
+
+不管反向传播算出多大的梯度，我把它的范数压到一个上限以内。超了，就等比例缩小。
+
+```python
+if ||g||_2 > max_norm:
+      g = g * (max_norm / ||g||_2)
+```
+>**就这么简单。算一下所有梯度的 L2 范数。** **如果超了阈值，等比例缩小到阈值。方向不变，只缩长度。**
+**比如 max_norm = 1.0，你算出来的 ||g|| = 5.0，那就把每个梯度分量乘以 0.2。**
+**方向保留，步长控制。 这是关键——你没改变梯度指向哪里，你只限制了它迈多大步。**
+
+**关键问题：**
+
+1. max_norm 设多少？
+
+没有理论最优值。RNN 通常是 1.0 或 5.0。太小了训练慢（每一步都踩刹车），太大了等于没裁剪。你写 IMDB 的时候从 1.0开始，看 loss 曲线——如果 loss 还是偶尔爆炸就往下调，如果 loss 下降太慢就往上调。
+
+
+2. CNN 需要梯度裁剪吗？
+
+通常不需要。CNN 深度是固定的（比如 5 层卷积），梯度不会在时间维度连乘。但如果你写的是一个 200 层的ResNet——那也可以加，不过那是你想太多的问题。当前你不需要。
+
+
+**适用范围：**
+
+>对任何可能产生梯度爆炸的模型都能使用
+
+
+**RNN是“梯度剪裁”的头号用户**
+
+不是因为 RNN 特殊。是因为 RNN 最容易炸。
+
+BPTT 往回传 100 步，每一步乘一次 W_hh。就算 W_hh 每个元素都小于 1，连乘 100
+次也可能在某个方向上放大。这不是概率问题——训练久了，终有一次炸。
+
+全连接层不一样。一个 5 层的 MLP，反向传播只是 5 次连乘。炸的概率低得多。但这不是说它不会炸。
+
+全连接层也会炸，虽然少见
+
+**想象一个 100 层的 MLP，没有 BN，没有残差连接。反向传播，梯度从第 100 层传到第 1 层，每层乘一次权重矩阵。和 RNN一样的问题。**
+
+你初始化不好（比如权重初始值偏大），第一轮训练就炸。或者你学习率设太大了，某一步的更新把参数推到了一个「一阶导很大」的
+区域，下一轮梯度直接飞了。
+
+这时候——梯度裁剪，通用的。```clip_grad_norm_```不管你是什么模型，它只管梯度范数大不大。
 
 
 
 
+>RNN的每一步意味着MLP的每一层，所以RNN极容易产生梯度爆炸。
 
 
 
 
+#### 9.2.5 RNN具体流程
+
+RNN 解决的核心问题：**处理变长的、有顺序依赖的序列数据。**
+
+CNN 的卷积核看的是固定大小窗口，但语言不是这样工作的——"我三年前在纽约认识的那个朋友，今天来北京看我了"，"我"和"朋友"之间隔了 8 个字。这些长距离依赖不是固定窗口能抓住的。
+
+RNN 做的是：每读一个字，脑子里的"理解"就更新一次。带着一个不断更新的**记忆**往前走。
+
+---
+
+**完整管道：从原始文本到最终输出**
+
+以"这部电影很好看" → 情感分类（正面/负面）为例。
+
+**第 0 步：分词（Tokenization）**
+
+做一张表，每个词给一个编号：
+
+```
+{'<PAD>':0, '<UNK>':1, '这':2, '部':3, '电影':4, '很':5, '好看':6, '难看':7, '无聊':8, '精彩':9}
+```
+
+"这部电影很好看" → [2, 3, 4, 5, 6]
+
+分词就是查表换数字。PAD 是填充符号（短句子后面补 0），UNK 是未登录词。实际上 IMDB 英文分词更复杂（拆 don't、转小写），但本质就是查表。
+
+**第 1 步：词向量（Embedding）**
+
+整数不能直接喂给神经网络——"好看"(id=6)和"难看"(id=7)数值很接近，但意思完全相反。
+
+Embedding 层：把每个整数映射成一个向量。向量里的数字是训练出来的——语义相近的词，向量在空间里靠得近。
+
+embedding_dim = 4 为例：
+
+```
+词 id=2 '这'   → [ 0.12, -0.34,  0.56,  0.78 ]
+词 id=3 '部'   → [ 0.91, -0.12, -0.45,  0.33 ]
+词 id=4 '电影' → [-0.23,  0.67,  0.11, -0.89 ]
+词 id=5 '很'   → [ 0.45,  0.23, -0.67,  0.12 ]
+词 id=6 '好看' → [ 0.78, -0.45,  0.34, -0.56 ]
+```
+
+输入变成 5×4 矩阵：5 个时间步，每个时间步 4 维向量。
+
+**第 2 步：RNN 细胞（核心机制）**
+
+RNN 只有两组可学习参数：
+
+```
+W_xh: 输入 x 映射到隐藏空间    (input_size × hidden_size)
+W_hh: 旧记忆映射到新记忆        (hidden_size × hidden_size)
+b_h:  偏置
+```
+
+核心公式：h_t = tanh(W_hh · h_{t-1} + W_xh · x_t + b_h)
+
+hidden_size = 3 为例，h_0 = [0, 0, 0]。
+
+**时间步 t=1，读入"这" x_1 = [0.12, -0.34, 0.56, 0.78]：**
+
+h_0 · W_hh = [0, 0, 0]（第一步，旧记忆为零）
+
+x_1 · W_xh：矩阵乘法得 [0.206, -0.096, -0.314]
+
+h_1 = tanh([0.206, -0.096, -0.314]) = [0.203, -0.096, -0.304]
+
+**h_1 = [0.203, -0.096, -0.304]**。这三个数字就是读完"这"之后的"理解"。
+
+**时间步 t=2，读入"部" x_2 = [0.91, -0.12, -0.45, 0.33]：**
+
+h_1 · W_hh = [0.076, -0.343, -0.074]
+
+x_2 · W_xh = [0.107, -0.213, 0.275]
+
+总和 = [0.183, -0.556, 0.201]
+
+h_2 = tanh([0.183, -0.556, 0.201]) = [0.181, -0.506, 0.198]
+
+注意：h_1 的信息已经混进 h_2 了——第二维从 -0.096 变成 -0.506，"部"这个词强化了负向。
+
+**依此类推到 h_5，假设 h_5 = [0.723, -0.891, 0.456]**
+
+这个向量是读完"这部电影很好看"五个字之后，脑子里的全部理解。
+
+**第 3 步：分类头（many-to-one）**
+
+情感分类只在最后一步输出：
+
+```
+FC 层: logits = h_5 · W_fc + b_fc
+        = [0.723, -0.891, 0.456] · W_fc + [0.1, 0.1]
+        = [1.733, -1.019]
+
+Softmax: prob_正面 = e^1.733 / (e^1.733 + e^(-1.019)) ≈ 0.940
+         prob_负面 = 0.060
+```
+
+输出：94% 正面。预测正确。
+
+**第 4 步：Loss 计算**
+
+交叉熵：loss = -[1 × ln(0.940) + 0 × ln(0.060)] = 0.062
+
+反向传播（BPTT）从 h_5 沿时间往回传：h_5 → h_4 → ... → h_1 → Embedding → 更新所有参数。
+
+---
+
+**整条管道一览：**
+
+```
+输入文本 → 分词 → Embedding → RNN(h_0→h_1→...→h_5) → FC → softmax → loss
+                              ↑W_xh,W_hh 同一组参数反复用
+```
+
+**Teacher Forcing：**
+
+训练时每一步输入用的是真实的上一个词，不是模型预测的词。防止模型在自己的错误上越跑越偏。
+
+**三个关键认知：**
+
+1. Embedding 是训练出来的，不是查死的。训练中梯度会更新 Embedding 表，让语义相近的词在向量空间里真正靠近。
+
+2. W_xh 和 W_hh 在所有时间步共享。不是 5 个不同的盒子，是同一个盒子用了 5 次。这就是"循环"的含义。
+
+3. 梯度顺着时间反向传播时，W_xh 和 W_hh 的梯度是所有时间步累加的——同一个 W 在 5 个时间步各用了一次，总梯度来自 5 个位置的贡献之和。这就是 BPTT = 展开 + 反向传播。
+
+>RNN = 同一个盒子在时间轴上反复用。权值共享从空间（CNN卷积核）换到了时间（RNN细胞）。
+
+---
+
+**RNN 四种工作模式：**
+
+| 模式 | 说明 | 例子 |
+|------|------|------|
+| many-to-one | 看完整个序列，给一个判断 | 情感分类、垃圾邮件检测 |
+| many-to-many（对齐） | 每步都输出，输入输出等长 | 词性标注、NER |
+| many-to-many（不等长） | 编码器读完→解码器输出 | 机器翻译、摘要 |
+| one-to-many | 一个输入→生成序列 | 图像描述 |
+
+IMDB 情感分类是第一类 many-to-one——只在最后一步输出。
+
+**API 速查：**
+
+```python
+lstm = nn.LSTM(input_size=256,      # Embedding 维度
+               hidden_size=128,     # 隐状态维度
+               num_layers=2,        # LSTM 层数
+               batch_first=True,    # (batch, seq, features) 而非默认的 (seq, batch, features)
+               bidirectional=True)  # 双向，输出维度翻倍
+
+output, (h_n, c_n) = lstm(x)   # x: (batch, seq_len, input_size)
+# output: (batch, seq_len, hidden*D)  每步输出
+# h_n:    (layers*D, batch, hidden)   最后一步隐状态（many-to-one 用这个）
+# c_n:    (layers*D, batch, hidden)   最后一步细胞状态
+```
+
+实际直接用 `nn.LSTM` 或 `nn.GRU`，不用原始 `nn.RNN`——原始 RNN 梯度消失严重，实际没人用。
+
+>BPTT 梯度传播 = W_hh 连乘 seq_len 次。特征值 <1 → 指数衰减（梯度消失），>1 → 指数增长（梯度爆炸）。这是 RNN 的根本缺陷，LSTM/GRU 的门控机制就是为了修这个问题。
+
+
+#### 9.2.6 GRU（门控循环单元）
+
+**核心**
+
+- z（更新门）：当前词值不值得写进记忆
+- r（重置门）：旧记忆对理解当前词有没有用
+
+**理解：**
+
+z（更新门）和重要性：基本对应
+
+z_t 决定「新候选在最终记忆中占多大比例」。
+
+z_t ≈ 0 → 旧记忆原封不动。这个词不值得写进记忆。
+
+读到"的"：
+z_t = 0.08  →  h_t ≈ h_{t-1}
+模型说：这个词不重要，我不更新。
+
+z_t ≈ 1 → 覆盖旧记忆。这个词有值得写进去的新信息。
+
+读到"好看"：
+z_t = 0.91  →  h_t ≈ h_tilde_t（全新的记忆）
+模型说：这是关键信息，记下来。
+
+所以 z 和重要性确实直接相关——z 越小越不重要，z 越大越值得写。
+
+---
+r（重置门）和重要性：不对应
+
+r_t 的逻辑不一样。它问的是：「在计算新候选时，旧记忆有没有参考价值？」
+
+r_t ≈ 0 → 旧记忆没用，忽略它，从零开始理解当前词。
+r_t ≈ 1 → 旧记忆有用，带上上下文一起理解当前词。
+
+r_t 不论大还是小，都不能推导这个词重不重要。
+
+什么时候 r_t 小？句子开头。
+读到"这"：
+r_t = 0.23  →  旧记忆基本被忽略
+不是"这"不重要，是上一句的旧记忆和这一句没关系。模型需要重置——忘掉上句，重新开始。
+
+什么时候 r_t 大？在句子中间。
+读到"很好看"：
+r_t = 0.88  →  旧记忆充分参与
+不是"很好看"比"这"更重要，是需要前面的上下文才能理解它在修饰什么。
+
+GRU 解决 RNN 的根本缺陷：RNN 每一步强制更新记忆，没有说"不"的能力。读入"的""了"这种虚词也必须更新 h——每一步经过 tanh 都在消耗信号，早期信息被洗没。
+
+|z_t（更新门）|r_t（重置门）|模型在说什么|
+|-|-|-|
+|低|低|旧记忆无关 + 不值得写 = 句子边界的虚词。比如新句开头第一个"的"——和上文无关，本身也不重要|
+|低|高|旧记忆有关 + 不值得写 = 帮助理解但不值得记忆。比如定语从句里的"which"|
+|高|低|旧记忆无关 + 值得写 = 新话题的第一个实词。重置旧记忆，写入全新内容|
+|高|高|旧记忆有关 + 值得写 = 核心内容词。在已有理解上叠加新信息|
 
 
 
+GRU 给了 RNN 两个新能力：
+1. **选择性遗忘**（重置门）：新输入和旧记忆无关？把旧记忆对应部分清零。
+2. **选择性保留**（更新门）：新输入不值得写进记忆？留着旧记忆不变。
+
+---
+
+**四个公式：**
+
+**第一道门：重置门 r_t**
+
+r_t = sigmoid(W_xr · x_t + W_hr · h_{t-1} + b_r)
+
+r_t 每个元素在 0~1。r_t→0：旧记忆这位在算候选时忽略；r_t→1：正常参与。
+
+输入新句子第一个词时，旧记忆和这个词完全没关系——r_t 应该接近 0，让模型从零开始。
+
+**第二道门：更新门 z_t**
+
+z_t = sigmoid(W_xz · x_t + W_hz · h_{t-1} + b_z)
+
+决定旧记忆和新候选怎么混合。z_t→1：用新的；z_t→0：保留旧的。
+
+读到"的""了"时，z_t 应该接近 0——"这个信息不重要，我不更新"。
+
+**候选记忆 h_tilde**
+
+h_tilde_t = tanh(W_xh · x_t + W_hh · (r_t ⊙ h_{t-1}) + b_h)
+
+⊙ 是逐元素乘法。和 RNN 的唯一区别：h_{t-1} 前面乘了 r_t。
+r_t 全是 0 → 纯靠当前输入，完全不管过去。
+r_t 全是 1 → 和原始 RNN 一模一样。
+
+**最终记忆 h_t（GRU 的灵魂）**
+
+h_t = (1 - z_t) ⊙ h_{t-1} + z_t ⊙ h_tilde_t
+
+线性插值——旧记忆和新候选各取一部分。
+
+z_t = 0 → h_t = h_{t-1}。**旧记忆原封不动复制过来。** 梯度穿过这一项乘 1，不衰减。这就是 ResNet 的恒等映射——GRU 的梯度高速公路。
+
+z_t = 1 → h_t = h_tilde_t。完全覆盖。
+
+---
+
+**具体数字例子：**
+
+hidden_size=2，h_{t-1}=[0.8, -0.6]，x_t 对应虚词"的"：
+
+重置门:
+r_t = sigmoid([-1.2, 0.3]) = [0.23, 0.57]
+→ 第一位 0.23：旧记忆第一位基本忽略
+→ 第二位 0.57：第二位参与一半
+
+更新门:
+z_t = sigmoid([-2.5, -2.1]) = [0.08, 0.11]
+→ 两位都接近 0：这次更新不重要，旧记忆应该保留
+
+候选记忆 h_tilde = [0.15, -0.08]
+
+最终记忆:
+h_t[0] = (1-0.08)×0.8 + 0.08×0.15 = 0.736+0.012 = 0.748  几乎不变
+h_t[1] = (1-0.11)×(-0.6)+0.11×(-0.08) = -0.534-0.009 = -0.543 几乎不变
+
+旧记忆几乎原封不动。虚词被更新门关在外面。
+
+---
+
+**为什么梯度不消失：**
+
+∂h_t/∂h_{t-1} = (1 - z_t) + ...（含 z_t 和 tanh 导数的项）
+
+关键在 (1 - z_t)。如果 z_t 接近 0，这一项接近 1。梯度乘以接近 1 的东西，信号不衰减。
+
+从 h_100 传到 h_1，路径上有大量 z_t≈0 的时间步，梯度近似乘一串 1——信息直接穿过。
+
+这不是更复杂的激活函数，不是更好的初始化。是**结构上给了一条可以完全跳过更新的路径**。
+
+---
+
+**GRU vs RNN：**
+
+| | RNN | GRU |
+|------|------|------|
+| 更新方式 | 强制刷新 | 可跳过（更新门 z_t） |
+| 旧记忆利用 | 直接全用 | 选择性用（重置门 r_t） |
+| 梯度流动 | W_hh 连乘 | 有乘 1 的路径 |
+| 长序列 | 学不到 | 学得到 |
+| 参数量 | 2组W | 3组W（多两道门的W） |
+
+---
+
+**GRU 到 LSTM 的距离：**
+
+GRU 四个公式搞懂了，LSTM 就多一件事：把"记忆"拆成两个——隐状态 h（对外输出）和细胞状态 c（对内记忆）。GRU 里 h_t 同时干了这两件事，LSTM 分开了。
+
+其他完全一样：门用 sigmoid，候选用 tanh，逐元素乘法控制信息流。LSTM 多一个门（输出门），多一个变量（c），没有新概念。
+
+>GRU 核心：两个门——重置门控遗忘，更新门控保留。更新门给了梯度一条不衰减的高速公路。LSTM 只是在这条路上多开了一条车道。
+
+
+## LSTM 费曼教学深度笔记
+
+> **背景：** 2026-06-19，前一天学完GRU（重置门、更新门），当天学LSTM。用费曼教学法进行了一轮深度问答，以下按重要程度排序记录。
+
+---
+
+### 🔴 问题一：为什么要有 c_t 和 h_t 两个流？
+
+**原始困惑：** h_t 也能存信息、也能当工作台，GRU 不就这么干的吗？多一个 c_t 的优势在哪？
+
+**答案核心：c_t 是被保护的存储器——它在时间上传播时，不经过非线性激活函数。**
+
+```
+c_t = f_t ⊙ c_{t-1} + i_t ⊙ c̃_t
+```
+
+c_{t-1} 到 c_t，经过的操作只有**逐元素乘法**。没有 tanh，没有矩阵乘法。如果遗忘门 f_t 接近全 1，c_{t-1} 几乎原封不动就到了 c_t。
+
+而 h_t 每次都要被塞进下一轮：和 x_t 拼起来、乘 W、过非线性。一个存了 100 步的信息，经过 100 次非线性变换，早就面目全非。
+
+**类比修正过程：**
+- ❌ 我最初类比：c_t = 笔记本（摘要），h_t = 嘴里说的（不准确——c_t 不压缩，它累加）
+- ✅ 修正后：c_t = 不断被编辑的共享文档（删掉某行、加新段落、保留旧段落），h_t = 当前理解（从文档中挑出与当前情节相关的，不相关的就不提）
+- ❌ 我另一个错误：认为"c_t 的参考价值永远比 h_t 高"——如果任务是预测下一个词，h_t 已经做了筛选，比 c_t 更有效。分工不同，不是谁比谁好。
+
+**关键公式再看一遍：**
+```
+h_t = o_t ⊙ tanh(c_t)
+```
+c_t 先被 tanh 压到 [-1,1]（数值稳定需要），再被输出门筛选。每一步 h_t 都是"加工过的"。c_t 不用干活——它只负责存在那里。
+
+> **类比定稿：** c_t 是银行卡真实余额（精确数字），h_t 是 App 上显示的进度条（被压缩过的可视化）。报税你得用真实数字（c_t），快速浏览余额用进度条就够了（h_t）。但你不能说余额永远比进度条好——快速扫一眼的时候，进度条比完整数字好用。
+
+---
+
+### 🔴 问题二：c̃_t 是不是"先不管有没有用，先记下来再说"？
+
+**答案：对，就是这个意思。**
+
+c̃_t = tanh(W_c · [h_{t-1}, x_t] + b_c) 是**候选新记忆**。这步不管 x_t 有没有用，先全算出来。
+
+然后**输入门 i_t 当裁判**：
+- i_t 接近 0：这份候选的这个维度，不收
+- i_t 接近 1：收，全收
+
+完整逻辑链：
+1. 「这里有份新信息候选」→ c̃_t（草稿）
+2. 「收不收？收多少？」→ i_t（审稿）
+3. 「执行」→ i_t ⊙ c̃_t 加到 c_t 上（落笔）
+
+> 先草稿、再审稿、再落笔。c̃_t 就是草稿。
+
+---
+
+### 🔴 问题三：为什么不能去掉输出门 o_t？把 c_t 全暴露给 h_t 不是更全面吗？
+
+**原始困惑：** c_t 信息更多，去掉 o_t 直接暴露不是更好吗？
+
+**答案：「更全的信息」≠「更好的信息」。**
+
+**原因一：c_t 是杂货铺，不是陈列柜。**
+c_t 存了所有东西——张三湖南人、李四四川人、上一章的伏笔……什么都堆在里面。但当前步你可能只需要「这个人能吃辣」来预测下一个词。把整个杂货铺倒给下一层——噪声远多于信号。o_t 的作用是：**在当前上下文的指导下，从杂货铺里拣出有用的。**
+
+**原因二：c_t 没有范围限制。**
+c_t 通过加法更新，理论上可以增长到任意大。如果直接当 h_t 用，下一步就要把它和 x_t 拼起来乘 W——没有边界的值塞进矩阵乘法，数值会爆炸。tanh 把 c_t 压到 [-1,1] 是数值稳定的硬需求。
+
+**原因三：o_t 是根据上下文动态筛选的。**
+对比一个去掉 o_t 的消融实验：h_t = tanh(c_t)。这意味着不管当前输入是什么，细胞状态的每一维都以同样的权重暴露。这就和「不管这篇论文讲什么，所有章节都放一样多的篇幅」一样蠢。o_t 看着 h_{t-1} 和 x_t 做决策——当前需要什么，它开什么。
+
+> **核心洞察：** LSTM 比 GRU 表达力强的一个关键原因就是输出门——c_t 存了什么，和 h_t 暴露了什么，是**解耦**的。GRU 没有这个——存什么就暴露什么。
+
+---
+
+### 🟡 门对应关系：LSTM vs GRU
+
+| 功能 | GRU | LSTM |
+|------|-----|------|
+| 控制旧记忆保留/新信息写入 | **更新门 z_t**（一个门搞定） | **遗忘门 f_t + 输入门 i_t**（拆成两个） |
+| 计算候选时控制用多少旧状态 | **重置门 r_t** | **没有**（LSTM 的 c̃_t 直接用完整 h_{t-1}） |
+| 控制状态对外暴露多少 | **没有**（h_t 直接就是最终状态） | **输出门 o_t** |
+
+- 为什么 LSTM 不需要重置门？因为 h_{t-1} 已经经过输出门过滤，不重要的信息已被屏蔽；且遗忘门可以先把 c_{t-1} 里的东西清掉。
+- 为什么 GRU 不需要输出门？GRU 的 h_t 存什么就暴露什么，没有解耦的需求。
+
+---
+
+### 🟡 思维惯性问题：一堂元认知课
+
+**自测题（原题）：** 如果 f_t 全固定为 1，i_t 全固定为 0，o_t 全固定为 1，这个 LSTM 会退化成什么？
+
+正确答案：**死模型。** c_t = c_{t-1} = ... = c_0（冻结），h_t = tanh(c_0)（常数）。比普通 RNN 还惨——RNN 至少 x_t 还能进去。
+
+**我犯的错和追溯：**
+
+| 步骤 | 我当时的回答 | 实际错在哪 |
+|------|-------------|-----------|
+| 第一反应 | "不能接受新知识但能精炼旧知识" | 默认给问题加了"模型先正常学了一阵子"的前提 |
+| 追问后 | "h_t = tanh(c_T)，每次对 c_T 提炼" | 把 tanh（固定压缩函数）当成了"精炼"（有意义的信息重组） |
+| 追问后 | "o_t 还在学习啊" | 忽略了原题明确写了 o_t = 1 的条件 |
+
+**两个错误，同一根源：**
+1. **思维惯性**：自动给问题加了一个题目没说的前提——"模型正常训练到一半然后被改参数"
+2. **粗心**：大脑一旦认定了"模型还活着"的框架，所有和框架矛盾的信息（o_t=1）被自动降权
+
+> **这不是智商问题，这是确认偏误——一旦你有了一个叙事，矛盾证据就被大脑调低音量。** 每个人都是这样。能追溯自己为什么走偏，比答对一道题重要。
+
+**命名不等于理解的又一次验证：**
+tanh = "激活函数" → 我脑补它在"加工信息"。但 tanh 只是一个有界的恒等映射——逐元素把数字压到 [-1,1]。没有跨维度交互，没有学习，没有重组。"激活函数"这个名字骗了我。
+
+---
+
+### 🟢 LSTM 核心教学内容总结
+
+**LSTM 解决了什么？** RNN 的梯度经过 seq_len 次 W_hh 连乘，指数衰减/爆炸。LSTM 修了一条高速公路（细胞状态 c_t），信息可以在上面几乎不变地跑几百步。
+
+**三步正向传播：**
+```
+1. 算四个东西：
+   f_t = σ(W_f[h_{t-1}, x_t])    ← 遗忘门：哪些旧信息扔掉？
+   i_t = σ(W_i[h_{t-1}, x_t])    ← 输入门：哪些新信息收进来？
+   c̃_t = tanh(W_c[h_{t-1}, x_t]) ← 候选新记忆（草稿）
+   o_t = σ(W_o[h_{t-1}, x_t])    ← 输出门：暴露什么？
+
+2. 更新细胞状态（高速公路）：
+   c_t = f_t ⊙ c_{t-1} + i_t ⊙ c̃_t
+
+3. 更新隐藏状态（工作台 / 对外输出）：
+   h_t = o_t ⊙ tanh(c_t)
+```
+
+**LSTM 比 RNN 强的根本原因：选择权。**
+- RNN：每步被迫更新，旧信息被冲走，没有商量余地
+- LSTM：遗忘门可以选择某些维度不动（梯度畅通），输入门可以选择性接收新信息
+- 如果把三道门全焊死 → 比 RNN 还惨的铁疙瘩
+
+**LSTM 比 GRU 复杂在哪？**
+- 多一道流（c_t 和 h_t 解耦）
+- 多一个门（输出门 o_t）
+- 表达能力更强，但参数量更大、更慢
+- 实际效果经常和 GRU 差不多（GRU 性价比高）
+
+
+#### 9.4.1 词汇表构建
+
+**词表是什么？** 文本和模型之间的唯一接口。神经网络不吃字符串只吃数字，词表就是**词→数字**的翻译器。
+
+```
+原始文本 → 分词 → 查词表 → 索引序列 → nn.Embedding → 向量序列 → LSTM
+"this movie is bad"
+   ↓ 分词
+["this", "movie", "is", "bad"]
+   ↓ 查 word2idx
+[2, 3, 4, 5]
+   ↓ nn.Embedding(25000, 128)
+[[0.12, -0.03, ...],    ← "this" 的128维向量
+ [0.45, 0.21, ...],     ← "movie"
+ [0.08, -0.15, ...],    ← "is"
+ [-0.32, 0.11, ...]]    ← "bad"   shape: (4, 128)
+   ↓ nn.LSTM
+最终分类
+```
+
+**特殊标记：**
+
+- `<PAD>` = 0：填充符，短句子补到统一长度
+- `<UNK>` = 1：未知词，测试时遇到词表没见过的词全映射到这个
+
+**自己手写实现（20行，推荐）：**
+
+```python
+from collections import Counter
+
+def build_vocab(texts, max_size=25000):
+    counter = Counter()
+    for text in texts:
+        counter.update(text.split())
+    
+    word2idx = {'<PAD>': 0, '<UNK>': 1}
+    for word, _ in counter.most_common(max_size - 2):
+        word2idx[word] = len(word2idx)
+    
+    idx2word = {v: k for k, v in word2idx.items()}
+    return word2idx, idx2word
+```
+
+**PyTorch 没有现成的词表 API。** 备选方案：
+- `torchtext.vocab.build_vocab_from_iterator`：能用但版本混乱，API 频繁变动
+- HuggingFace tokenizers：工业级但太重，学 LSTM 项目杀鸡用牛刀
+- 自己手写：最可控，出问题不看文档就知道哪里错
+
+---
+
+#### 9.4.2 词向量表（Embedding）
+
+**本质：一张可学习的大表。**
+
+```python
+nn.Embedding(vocab_size=25000, embedding_dim=128)
+```
+
+这一行创建了一个 `(25000, 128)` 的矩阵：
+
+```
+第0行 (<PAD>):  [全0]           ← 填充符，始终全0（padding_idx=0）
+第1行 (<UNK>):  [随机初始化]     ← 未知词
+第2行 (this):   [随机初始化]     ← 每个词占一行
+第3行 (movie):  [随机初始化]
+第4行 (is):     [随机初始化]
+第5行 (bad):    [随机初始化]
+...
+第24999行:      [随机初始化]
+```
+
+**查表操作：** 输入 `[2, 3, 4, 5]` → 取第 2、3、4、5 行 → 输出 `(4, 128)` 的向量序列。
+
+**初始值：全是随机数。** 和 `nn.Linear` 的权重一样，PyTorch 用正态分布 N(0,1) 初始化，训练过程中梯度更新。
+
+**语义是学出来的，不是人告诉它的：**
+
+- 训练前：bad 向量 ≈ good 向量（都是随机的），模型分不清好坏
+- 训练中：模型发现把 bad 和 good 拉远能降低 loss → 梯度更新9
+- 训练后：bad 附近聚集了 terrible、awful、worst；good 附近聚集了 great、excellent、wonderful
+
+**预训练词向量（可选，不是必须）：**
+```python
+embedding.weight.data.copy_(torch.from_numpy(glove_matrix))  # 用GloVe覆盖随机值
+```
+好处是训练快、小数据集效果好；坏处是多外部依赖、词表要对齐。IMDB 2.5万条数据够大，随机初始化 + 跟着训就行。
 
 
 
+#### 9.4.3 多层LSTM的执行顺序
+
+**问题背景：** 三层LSTM，第一层算出 h_1^(1) 之后，第二层能不能立刻拿来算 h_1^(2)？还是必须等第一层把所有时间步算完？
+
+**数学上，可以立刻拿。** 第二层算 h_1^(2) 只需要 h_1^(1) 和 h_0^(2)，不需要 h_2^(1)。依赖图允许"算出一个传一个"。
+
+**工程上，不这么做。** 实际框架（PyTorch、cuDNN）用的是**层优先**：层1算完整个序列 [h_1^(1), h_2^(1), ..., h_T^(1)]，然后层2一次性消费。为什么？
+
+**原因不在数学，在硬件。**
+
+GPU的设计哲学叫"单指令多数据"——它假设你要对一大批数做同一种运算。几千个核心，每一个都很简单，但合起来吞吐量巨大。为了喂饱它们，你得给大块数据。
+
+LSTM每个时间步有两类计算：
+
+- W·x_t（当前输入做矩阵乘法）——不同时间步之间**无依赖**。W是同一组参数，x_1、x_2、x_3 全已知。可以摞成一个大矩阵一次算完：W·[x_1, x_2, ..., x_T]。
+- U·h_{t-1}（上一隐藏状态做矩阵乘法）——**有依赖**。算 h_t 之前必须有 h_{t-1}，这部分必须串行。
+
+如果你用"算出一个传一个"的方式（时间优先），会发生两件事：
+
+1. **内核启动开销吞噬计算时间。** 每次让GPU启动一个计算任务，调度指令本身花的时间，比你让几千个核算那个小矩阵乘法还要长。时间优先意味着启动几十上百次微型任务；层优先只启动几次大型任务。
+
+2. **大部分核心在发呆。** 给你5000个核心，你扔一个3×4的矩阵乘法过去——可能只有12个核心在干活，剩下4988个在围观。这不是编程错误，是你给的数据块太小了，指令广播出去之后大部分核心没分到活。
+
+所以层优先不是"更快"，而是"不这么做就是在浪费硅片"。把同一层所有时间步的 W·x 摞成一个大矩阵，喂一次，所有核心同时轰鸣，算完。然后处理必须串行的 U·h 部分。产出完整序列交给下一层。
+
+**补充细节：** 如果序列特别长（比如一万个时间步），W·[x_1, ..., x_{10000}] 太大塞不进显存，框架会切成几块。每块内部还是层优先，U·h 的状态跨块传递。这是显存的限制，不是策略的选择。
+
+**一句话：** 教科书上的LSTM公式告诉你"每个时间步做什么"，不告诉你"所有时间步怎么调度"。调度是硬件决定的——GPU要大口吃饭，你得把数据摞成一整盘端上去，不能一粒一粒往嘴里塞。
 
 
 ## 10.三个实战项目
@@ -3574,7 +4323,1256 @@ for epoch in range(epochs):
 
 ### 10.2 classify-leaves
 
+#### 项目概述
+
+树叶分类任务：输入 3×224×224 叶片俯视图，输出 176 个树种之一。自建 CNN + 训练全流程。
+
+#### 一、数据导入
+
+**问题：标签是字符串，PyTorch 不认**
+
+`train.csv` 的 label 列是 `maclura_pomifera` 这种字符串，`CrossEntropyLoss` 只接受整数类索引（`torch.long`）。
+
+解决：构建 `str → int` 映射字典，`__getitem__` 中查表转换：
+
+```python
+idx_class_list = {'abies_concolor': 0, ..., 'zelkova_serrata': 175}
+label = self.idx_class_list[self.dataframe.iloc[idx, 1]]  # str → int
+```
+
+推理时反向映射 `int → str`：
+
+```python
+idx_to_name = {v: k for k, v in idx_class_list.items()}
+```
+
+> **拓展**：也可以直接用 `sklearn.preprocessing.LabelEncoder`，`fit_transform` 编码，`inverse_transform` 解码，代码更简洁。
+
+**问题：变量名覆盖**
+
+```python
+# 错误示范
+test_train_csv = train_test_split(...)  # DataFrame
+test_train_csv = imgdataset(test_train_csv, ...)  # 覆盖成了 Dataset
+```
+
+后续想拿原始 DataFrame 时已经丢了。Dataset 类型变量应取明确名字：
+
+```python
+train_train_csv, test_train_csv = train_test_split(...)
+train_train_dataset = imgdataset(train_train_csv, ...)
+test_train_dataset = imgdataset(test_train_csv, ...)
+```
+
+#### 二、网络设计
+
+**问题：卷积输出尺寸算不对**
+
+网络 Flatten 后期望 `[B, 2048]`，实际 `[B, 512]`，`Linear` 层直接报错。
+
+核心公式：
+
+$$H_{out} = \left\lfloor\frac{H_{in} + 2p - k}{s}\right\rfloor + 1$$
+
+两个常见陷阱：
+
+| 陷阱 | 说明 |
+|---|---|
+| `MaxPool2d(k=3)` 没写 stride → 默认 s=3，不是 s=1 |
+| `MaxPool2d(k=3)` 没写 padding → 默认 p=0 |
+| `Conv2d(p=2, s=1)` → padding 比 kernel 多，特征图不减反增（224→228） |
+
+> **拓展**：标准做法是卷积结束后加 `nn.AdaptiveAvgPool2d((1,1))`，不管前面输出多大都能稳定到指定维度，彻底不用手算尺寸。几乎所有现代 CNN（ResNet、EfficientNet）都用这招。
+
+**最终架构**（5个卷积块 + 1个全连接分类头）：
+
+```
+输入 [3, 224, 224]
+
+Block 1: Conv(3→32,k3,s1,p1) + BN + ReLU          → [32, 224, 224]
+Block 2: Conv(32→64,k3,s2,p1) + BN + ReLU + Pool   → [64, 56, 56]
+Block 3: Conv(64→128,k3,s2,p1) + BN + ReLU + Pool  → [128, 14, 14]
+Block 4: Conv(128→256,k3,s2,p1) + BN + ReLU + Pool → [256, 4, 4]
+Block 5: Conv(256→512,k3,s2,p1) + BN + ReLU + Pool → [512, 1, 1]
+
+Flatten → [512]
+Dropout(0.5) → Linear(512, 176)
+```
+
+设计原则：Conv(s=2) 负责通道翻倍 + 空间减半，MaxPool(s=2) 负责进一步降维。两者配合，空间路线：224 → 112 → 56 → 28 → 14 → 7 → 4 → 2 → 1。
+
+**Dropout 放哪里？**
+
+| 位置 | 加？ | 原因 |
+|---|---|---|
+| 卷积层间 | ❌ | BN 已有正则作用；特征图像素有空间关联，随机丢一个像素邻居还存着 |
+| 全连接层前 | ✅ | 神经元没有空间结构，Dropout 防止共适应效果最强 |
+
+#### 三、训练阶段
+
+**问题：过拟合**
+
+训练 loss=0.014，测试 loss=0.637（45 倍差距），正确率 84% 不再涨。
+
+解决——四件套一起上：
+
+| 方法 | 原理 | 本项目取值 |
+|---|---|---|
+| **Dropout** | 训练时随机置零 50% 神经元，强迫学冗余特征 | `p=0.5` |
+| **Label Smoothing** | one-hot 目标变软标签，防止过度自信 | `label_smoothing=0.1` |
+| **weight_decay** | L2 正则，限制权重大小 | `1e-3`（比默认大10倍） |
+| **Early Stopping** | 测试 loss 连续 N 轮不降就停，保存最优权重 | `patience=5` |
+
+过拟合 vs 欠拟合判断：
+
+| | 训练 Loss | 测试 Loss | 趋势 |
+|---|---|---|---|
+| 欠拟合 | 高，持续降 | 高，持续降 | 还没学够，继续跑 |
+| 正常 | 降 | 降 | 继续跑 |
+| 过拟合 | 极低 | 升高 | 在背答案 |
+| 震荡 | 降 | 剧烈波动 | lr 太大 |
+
+**问题：测试 Loss 剧烈震荡**
+
+```
+Epoch 20: test_loss=1.61  acc=81.7%
+Epoch 21: test_loss=2.51  acc=51.0%  ← 权重被一个大步更新"踢飞"
+```
+
+原因：学习率太大（0.001），训练后期梯度变小但步长不变，一个 batch 的波动就能踢飞权重。
+
+解决：`lr` 从 `1e-3` 降到 `5e-4`。
+
+> **拓展——AdamW vs 学习率调度器（ReduceLROnPlateau）**：
+> 
+> | | AdamW | ReduceLROnPlateau |
+> |---|---|---|
+> | 调节对象 | 每个参数独立的步长缩放（梯度层面） | 全局绝对步长（泛化层面） |
+> | 触发条件 | 梯度一阶/二阶矩统计 | 测试 loss 不降 |
+> | 解决的问题 | 不同参数收敛速度不同 | 后期步长太大导致震荡 |
+> | 关系 | 管"怎么走" | 管"走多少" |
+> | | **互补，不是重复** |
+> 
+> ```python
+> scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+>     optimizer, mode='min', factor=0.5, patience=3
+> )
+> scheduler.step(test_avg_loss)  # 每个 epoch 测试完调用
+> ```
+
+**问题：GPU 跑一段闲一段**
+
+根因：Dataset 每次 `read_image` 读磁盘，几千个小 JPG 随机读取，磁盘寻道 > GPU 算力。
+
+解决：
+
+| 手段 | 作用 |
+|---|---|
+| `num_workers=8` | 8 个进程并行读图 |
+| `persistent_workers=True` | worker 跨 epoch 复用，省重建开销 |
+| `prefetch_factor=4` | 每个 worker 提前备 4 批 |
+| `pin_memory=True` | 锁页内存 → GPU DMA 直拷 |
+| `non_blocking=True` | CPU→GPU 传输和计算异步重叠 |
+| `read_image` 替代 PIL | libjpeg-turbo 比 PIL 快 2~3 倍 |
+
+⚠️ Windows 上 `num_workers > 0` 必须加 `if __name__ == '__main__':` 保护，否则子进程 import 无限递归。
+
+> **拓展**：终极方案是初始化时把图全读到内存（uint8 tensor），`__getitem__` 只做 transform。磁盘 I/O 降为 0，但需要 ~2.7GB 内存。
+
+#### 四、代码调试
+
+**1. `nn.Sequential` 参数列表缺逗号 → 语法错误**
+
+```python
+# ❌ 两个对象间没逗号
+nn.Dropout(p=0.5)
+nn.Linear(512, 176),
+
+# ✅
+nn.Dropout(p=0.5),
+nn.Linear(512, 176),
+```
+
+`Sequential` 本质是普通函数调用，参数之间必须有逗号。
+
+**2. `exit()` 调试残留** — 循环里调试用 `exit()` 忘删，训练只跑 Epoch 1 就退出。
+
+**3. import 失败但源码无误** — `__pycache__` 缓存了旧 `.pyc`，删掉文件夹即解决。
+
+#### 五、推理阶段
+
+容易漏的必备设置：
+
+```python
+model.eval()                     # ① 关 Dropout + BN 用全局统计
+with torch.no_grad():            # ② 不计算梯度，省显存
+    for img, _ in test_dataloader:
+        img = img.to(device)      # ③ 数据和模型同一设备
+        output = model(img)       # ④ logits [B, 176]
+        pred = output.argmax(1)   # ⑤ 最大值的索引 → 类编号
+```
+
+漏掉 ① Dropout 仍生效，每次结果不同。漏掉 ② 额外占显存。
+
+#### 六、知识速查
+
+| 概念 | 一句话 |
+|---|---|
+| `state_dict()` | 把模型所有可学习参数导出成字典 |
+| `torch.save(obj, path)` | 字典存盘 |
+| `model.load_state_dict(dict)` | 字典装回模型 |
+| `CrossEntropyLoss` | 内置 Softmax + NLLLoss，吃 logits 不吃 softmax 结果 |
+| `label_smoothing` | one-hot 变软标签，防过拟合 |
+| `pin_memory` | CPU 锁页内存，GPU 直接 DMA 拷贝 |
+| `non_blocking` | `.to(device)` 不阻塞 CPU，传输和计算可并行 |
+| `persistent_workers` | worker 存活整个训练周期 |
+| `prefetch_factor` | 每个 worker 提前取 N 批 |
+| `AdaptiveAvgPool2d((1,1))` | 自适应池化，永远不用手算特征图尺寸 |
+
+#### 七、最终效果
+
+**80%正确率，176分类**
+
+
+
+### 10.3 手写ResNet
+
+```ptyhon
+import torch
+import torch.nn as nn
+
+
+class BasicBlock(nn.Module):
+
+
+    def __init__(self, in_channle, out_channle, stride = 1, downsample = False):
+        super().__init__()
+
+        self.conv1 = nn.Conv2d(in_channels = in_channle, out_channels = out_channle, kernel_size = 3, stride = stride, padding = 1, bias = False)
+
+        self.bn1 = nn.BatchNorm2d(num_features = out_channle)
+
+
+        self.conv2 = nn.Conv2d(in_channels = out_channle, out_channels = out_channle, kernel_size = 3, stride = 1, padding = 1, bias = False)
+
+        self.bn2 = nn.BatchNorm2d(num_features = out_channle)
+
+        self.downsample = downsample
+
+        self.identity_conv = nn.Conv2d(in_channels = in_channle, out_channels = out_channle, kernel_size = 1, stride = stride, padding = 0, bias = False)
+
+        self.identity_bn = nn.BatchNorm2d(num_features = out_channle)
+
+        self.relu = nn.ReLU()
+
+
+    def forward(self, x):
+        identity = x
+
+        if self.downsample:
+            identity = self.identity_conv(identity)
+            identity = self.identity_bn(identity)
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        out = out + identity
+        out = self.relu(out)
+
+        return out
+
+class ResNet34(nn.Module):
+
+    # 传入的shape得是3 * 224 * 224的
+    def __init__(self, block, block_num, num_classes):
+        super().__init__()
+        self.in_channel = 64
+
+        # 3 * 224 * 224
+        self.conv1 = nn.Conv2d(in_channels = 3, out_channels = self.in_channel, kernel_size = 7, stride = 2, padding = 3)
+        self.bn1 = nn.BatchNorm2d(num_features = self.in_channel)
+
+        # 64 * 112 * 112
+        self.maxpool = nn.MaxPool2d(kernel_size = 3, stride = 2, padding = 1)
+
+        # 64 * 56 * 56
+        self.layout1 = self.make_layer(block = block, in_channel = self.in_channel, out_channel = 128, block_num = block_num[0], downsample = True)
+
+        # 128 * 28 * 28
+        self.layout2 = self.make_layer(block = block, in_channel = 128, out_channel = 256, block_num = block_num[1], downsample = True)
+
+        # 256 * 14 * 14
+        self.layout3 = self.make_layer(block = block, in_channel = 256, out_channel = 512, block_num = block_num[2], downsample = True)
+
+        # 512 * 7 * 7
+        self.layout4 = self.make_layer(block = block, in_channel = 512, out_channel = 1024, block_num = block_num[3], downsample = True)
+
+        # 1024 * 4 * 4
+        self.avgpool = nn.AvgPool2d(kernel_size = 5, stride = 2, padding = 1)
+
+        # 1024 * 1 * 1
+        self.fc = nn.Linear(in_features = 1024, out_features = num_classes)
+
+
+        self.relu = nn.ReLU()
+
+
+    def forward(self, x):
+        
+        # 7 * 7卷积
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x = self.layout1(x)
+        x = self.layout2(x)
+        x = self.layout3(x)
+        x = self.layout4(x)
+
+        x = self.avgpool(x)
+
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+
+        return x
+```
+
+**使用Normalize时，数据集太大，无法计算该数据集mean和std时，可以使用相近数据集的mean和std，这里可以使用ImageNet的mean和std**
+
+
+```python
+train_transform = v2.Compose([
+      v2.RandomHorizontalFlip(p=0.3),
+      v2.RandomVerticalFlip(p=0.3),
+      v2.RandomResizedCrop(size=(224, 224), antialias=True),
+      v2.RandomRotation(degrees=30),
+      v2.ToImage(),
+      v2.ToDtype(dtype=torch.float32, scale=True),
+      v2.Normalize(mean=[0.485, 0.456, 0.406],   # ImageNet标准值
+                   std=[0.229, 0.224, 0.225])
+])
+```
 
 
 
 
+### 10.4 迁移学习ResNet
+
+
+
+#### 10.4.1 只微调预训练模型的最后一层（全连接分类层）
+
+**数据集与ImageNet比较像的可以只修改分类头**
+
+```python
+model = resnet18(weights = 'DEFAULT')
+
+# 修改全连接层，使得全连接层的输出与当前数据集类别数对应
+# 新建的层默认 requires_grad = True
+model.fc = nn.Linear(model.fc.in_features, n_class)
+# 优化器只传入最后一层的参数
+optimizer = optim.Adam(model.fc.parameters())
+
+```
+
+
+
+#### 10.4.2 微调预训练所有层
+
+**数据集与ImageNet不怎么像的可以微调所有训练层**
+
+```python
+#载入预训练模型
+model = resnet18(weights = 'DEFAULT')
+model.fc = nn.Linear(model.fc.in_feature, n_class)
+#传入全部参数就可以对全部参数进行微调
+optimizer = optim.Adam(model.parameters())
+
+```
+关闭其他参数的梯度，只打开分类头的梯度
+```python
+# 关闭所有的grad
+for param in model.parameters():
+	param.requires_grad = False
+# 只打开分类头的grad
+for param in model.fc.parameters():
+	param.requires_grad = True
+```
+
+
+
+#### 10.4.3 随机初始化模型全部权重，重新训练
+
+**数据集与ImageNet完全不一样**
+
+
+```python
+# 只载入模型框架
+model = resnet18(weights = 'DEFAULT')
+model.fc = nn.Linear(model.fc.in_feature, n_class)
+# 传入全部参数
+optimizer = optim.Adam(model.parameters())
+```
+
+
+#### 10.4.4 迁移学习用于Leaves
+```python
+
+
+
+
+import torch
+from torchvision.models import resnet18
+from torch.utils.data import Dataset, DataLoader
+import pandas as pd
+import os
+from torchvision.io import read_image
+from torchvision.transforms import v2
+from sklearn.model_selection import train_test_split
+import time
+import torch.nn as nn
+from torch.utils.tensorboard import SummaryWriter
+
+
+
+idx_class_list = {'abies_concolor': 0, 'abies_nordmanniana': 1, 'acer_campestre': 2, 'acer_ginnala': 3, 'acer_griseum': 4, 'acer_negundo': 5, 'acer_palmatum': 6, 'acer_pensylvanicum': 7, 'acer_platanoides': 8, 'acer_pseudoplatanus': 9, 'acer_rubrum': 10, 'acer_saccharinum': 11, 'acer_saccharum': 12, 'aesculus_flava': 13, 'aesculus_glabra': 14, 'aesculus_hippocastamon': 15, 'aesculus_pavi': 16, 'ailanthus_altissima': 17, 'albizia_julibrissin': 18, 'amelanchier_arborea': 19, 'amelanchier_canadensis': 20, 'amelanchier_laevis': 21, 'asimina_triloba': 22, 'betula_alleghaniensis': 23, 'betula_jacqemontii': 24, 'betula_lenta': 25, 'betula_nigra': 26, 'betula_populifolia': 27, 'broussonettia_papyrifera': 28, 'carpinus_betulus': 29, 'carpinus_caroliniana': 30, 'carya_cordiformis': 31, 'carya_glabra': 32, 'carya_ovata': 33, 'carya_tomentosa': 34, 'castanea_dentata': 35, 'catalpa_bignonioides': 36, 'catalpa_speciosa': 37, 'cedrus_atlantica': 38, 'cedrus_deodara': 39, 'cedrus_libani': 40, 'celtis_occidentalis': 41, 'celtis_tenuifolia': 42, 'cercidiphyllum_japonicum': 43, 'cercis_canadensis': 44, 'chamaecyparis_pisifera': 45, 'chamaecyparis_thyoides': 46, 'chionanthus_retusus': 47, 'chionanthus_virginicus': 48, 'cladrastis_lutea': 49, 'cornus_florida': 50, 'cornus_kousa': 51, 'cornus_mas': 52, 'crataegus_crus-galli': 53, 'crataegus_laevigata': 54, 'crataegus_phaenopyrum': 55, 'crataegus_pruinosa': 56, 'crataegus_viridis': 57, 'cryptomeria_japonica': 58, 'diospyros_virginiana': 59, 'eucommia_ulmoides': 60, 'evodia_daniellii': 61, 'fagus_grandifolia': 62, 'ficus_carica': 63, 'fraxinus_nigra': 64, 'fraxinus_pennsylvanica': 65, 'ginkgo_biloba': 66, 'gleditsia_triacanthos': 67, 'gymnocladus_dioicus': 68, 'halesia_tetraptera': 69, 'ilex_opaca': 70, 'juglans_cinerea': 71, 'juglans_nigra': 72, 'juniperus_virginiana': 73, 'koelreuteria_paniculata': 74, 'larix_decidua': 75, 'liquidambar_styraciflua': 76, 'liriodendron_tulipifera': 77, 'maclura_pomifera': 78, 'magnolia_acuminata': 79, 'magnolia_denudata': 80, 'magnolia_grandiflora': 81, 'magnolia_macrophylla': 82, 'magnolia_stellata': 83, 'magnolia_tripetala': 84, 'magnolia_virginiana': 85, 'malus_baccata': 86, 'malus_coronaria': 87, 'malus_floribunda': 88, 'malus_hupehensis': 89, 'malus_pumila': 90, 'metasequoia_glyptostroboides': 91, 'morus_alba': 92, 'morus_rubra': 93, 'nyssa_sylvatica': 94, 'ostrya_virginiana': 95, 'oxydendrum_arboreum': 96, 'paulownia_tomentosa': 97, 'phellodendron_amurense': 98, 'picea_abies': 99, 'picea_orientalis': 100, 'picea_pungens': 101, 'pinus_bungeana': 102, 'pinus_cembra': 103, 'pinus_densiflora': 104, 'pinus_echinata': 105, 'pinus_flexilis': 106, 'pinus_koraiensis': 107, 'pinus_nigra': 108, 'pinus_parviflora': 109, 'pinus_peucea': 110, 'pinus_pungens': 111, 'pinus_resinosa': 112, 'pinus_rigida': 113, 'pinus_strobus': 114, 'pinus_sylvestris': 115, 'pinus_taeda': 116, 'pinus_thunbergii': 117, 'pinus_virginiana': 118, 'pinus_wallichiana': 119, 'platanus_acerifolia': 120, 'platanus_occidentalis': 121, 'populus_deltoides': 122, 'populus_grandidentata': 123, 'populus_tremuloides': 124, 'prunus_pensylvanica': 125, 'prunus_sargentii': 126, 'prunus_serotina': 127, 'prunus_serrulata': 128, 'prunus_subhirtella': 129, 'prunus_virginiana': 130, 'prunus_yedoensis': 131, 'pseudolarix_amabilis': 132, 'ptelea_trifoliata': 133, 'pyrus_calleryana': 134, 'quercus_acutissima': 135, 'quercus_alba': 136, 'quercus_bicolor': 137, 'quercus_cerris': 138, 'quercus_coccinea': 139, 'quercus_imbricaria': 140, 'quercus_macrocarpa': 141, 'quercus_marilandica': 142, 'quercus_michauxii': 143, 'quercus_montana': 144, 'quercus_muehlenbergii': 145, 'quercus_nigra': 146, 'quercus_palustris': 147, 'quercus_phellos': 148, 'quercus_robur': 149, 'quercus_shumardii': 150, 'quercus_stellata': 151, 'quercus_velutina': 152, 'quercus_virginiana': 153, 'robinia_pseudo-acacia': 154, 'salix_babylonica': 155, 'salix_caroliniana': 156, 'salix_matsudana': 157, 'salix_nigra': 158, 'sassafras_albidum': 159, 'staphylea_trifolia': 160, 'stewartia_pseudocamellia': 161, 'styrax_japonica': 162, 'taxodium_distichum': 163, 'tilia_americana': 164, 'tilia_cordata': 165, 'tilia_europaea': 166, 'tilia_tomentosa': 167, 'tsuga_canadensis': 168, 'ulmus_americana': 169, 'ulmus_glabra': 170, 'ulmus_parvifolia': 171, 'ulmus_procera': 172, 'ulmus_pumila': 173, 'ulmus_rubra': 174, 'zelkova_serrata': 175}
+
+
+
+
+class m_dataset(Dataset):
+
+    def __init__(self, dataframe : pd.DataFrame, idx_class_list, root_path, transforms = None):
+        super().__init__()
+        self.dataframe = dataframe
+
+        self.root_path = root_path
+
+        self.transforms = transforms
+
+        self.idx_class_list = idx_class_list
+
+
+    def __getitem__(self, idx):
+
+        img = read_image(path = os.path.join(self.root_path, self.dataframe.iloc[idx, 0]))
+
+        if self.transforms is not None:
+            img = self.transforms(img)
+        
+        label = self.idx_class_list[self.dataframe.iloc[idx, 1]]
+
+        return img, label
+    
+    def __len__(self):
+        return len(self.dataframe)
+
+
+
+if __name__ == '__main__':
+
+    # 参数区
+    m_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    epochs = 30
+    learn_rate = 1e-4
+    batch_size = 64
+    num_workers = 8
+    root_path = r'D:\AIProject\TorchVisionProject\classify-leaves\data'
+    num_classes = len(idx_class_list)
+    patience = 5
+    best_avg_loss = float('inf')
+    no_improve = 0
+
+    # 数据预处理
+
+    data_df = pd.read_csv(r'data\train.csv')
+
+    train_df, test_df = train_test_split(
+        data_df, 
+        test_size = 0.2, 
+        stratify = data_df['label'], 
+        random_state = int(time.time())
+    )
+
+    # print('Train_Test_Split')
+
+    # 模型、优化器、损失函数、数据块、数据迭代器、转换器
+
+    model = resnet18(weights = 'DEFAULT')
+    model.fc = nn.Linear(in_features = model.fc.in_features, out_features = num_classes)
+    model = model.to(m_device)
+
+    
+    optimizer = torch.optim.Adam(params = model.parameters(), lr = learn_rate)
+
+    loss = nn.CrossEntropyLoss().to(m_device)
+
+    writer = SummaryWriter(r'logs')
+
+    train_transforms = v2.Compose([
+        v2.RandomHorizontalFlip(p = 0.5),
+        v2.RandomVerticalFlip(p = 0.5),
+        v2.RandomRotation(degrees = 30), 
+        v2.ToImage(), 
+        v2.ToDtype(torch.float32, scale=True), 
+        v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+
+    test_transforms = v2.Compose([
+        v2.ToImage(), 
+        v2.ToDtype(torch.float32, scale=True), 
+        v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+
+    train_dataset = m_dataset(train_df, idx_class_list, root_path, train_transforms)
+
+    test_dataset = m_dataset(test_df, idx_class_list, root_path, test_transforms)
+
+    train_dataloader = DataLoader(train_dataset, batch_size = batch_size, shuffle = True, num_workers = num_workers, pin_memory = True, persistent_workers = True, prefetch_factor = 4)
+
+    test_dataloader = DataLoader(test_dataset, batch_size = batch_size, shuffle = False, num_workers = num_workers, pin_memory = True, persistent_workers = True, prefetch_factor = 4)
+
+    train_step = 0
+    test_step = 0
+    for epoch in range(epochs):
+
+        # 训练模型
+        model.train()
+        loss_sum = 0
+        strat_time = time.time()
+        for feature, true_label in train_dataloader:
+            
+            feature = feature.to(m_device, non_blocking = True)
+            true_label = true_label.to(m_device, non_blocking = True)
+
+            predict_label = model(feature)
+
+            l = loss(predict_label, true_label)
+
+            optimizer.zero_grad()
+            l.backward()
+            optimizer.step()
+
+            train_step += 1
+            loss_sum += l.item()
+            writer.add_scalar(tag = 'loss/train', scalar_value = l.item(), global_step = train_step)
+
+        end_time = time.time()
+        print('=' * 20)
+        print(f'第{epoch + 1}次训练完毕，loss = {loss_sum / len(train_dataloader)}，用时{end_time - strat_time}')
+        print('=' * 20)
+
+        # 测试
+        strat_time = time.time()
+        with torch.no_grad():
+
+            model.eval()
+            loss_sum = 0
+            correct_count = 0
+            for feature, true_label in test_dataloader:
+
+                feature = feature.to(m_device, non_blocking = True)
+                true_label = true_label.to(m_device, non_blocking = True)
+
+                predict_label = model(feature)
+
+                l = loss(predict_label, true_label)
+
+                predict_label = predict_label.argmax(1)
+
+                correct_count += (predict_label == true_label).sum().item()
+
+                loss_sum += l.item()
+
+                test_step += 1
+
+                writer.add_scalar(tag = 'loss/test', scalar_value = l.item(), global_step = test_step)
+            
+            end_time = time.time()
+            print('*' * 20)
+            print(f'第{epoch + 1}次测试，loss = {loss_sum / len(test_dataloader)}，用时{end_time - strat_time}')
+            print(f'第{epoch + 1}次测试，正确率 = {correct_count / len(test_dataset)}')
+            print('*' * 20)
+        
+            test_avg_loss = loss_sum / len(test_dataloader)
+            if best_avg_loss > test_avg_loss:
+                best_avg_loss = test_avg_loss
+                torch.save(model.state_dict(), 'best_model.pth')
+                no_improve = 0
+            else: 
+                no_improve += 1
+                if no_improve >= patience:
+                    print(f'训练早停于{epoch + 1}次训练')
+                    break
+
+
+
+        # 完成一轮epoch
+
+
+    writer.close()
+
+    print('=' * 20, "end", '=' * 20)
+
+
+```
+
+
+#### 10.4.5 迁移学习中，什么时候只对分类头训练，什么时候要对全部参数微调
+
+**一、只训练分类头（特征提取模式）适用场景：**
+
+| 条件 | 原因 |
+|------|------|
+| 新数据与ImageNet高度相似 | 预训练backbone提取的特征直接可用 |
+| 数据量很小（几百~几千张） | 全参数微调容易过拟合，冻结backbone是天然正则化 |
+| 算力/时间受限 | 只训练最后几层，速度快 |
+| 任务本身是ImageNet子集 | 比如"猫 vs 狗"，ImageNet已有对应类别 |
+
+**二、整体微调适用场景：**
+
+大部分实际工程中，整体微调更常见。因为预训练模型学的是通用特征（边缘、纹理、形状基元），而下游任务需要特定的细粒度特征，中间有gap，需要让整个网络去适应。
+
+**关键操作——分层学习率（discriminative fine-tuning）：**
+- 分类头（新层）：lr = 1e-3 或更高（随机初始化，需要大步更新）
+- 骨干网络（预训练层）：lr = 1e-4 或 1e-5（已训练好，小步微调）
+
+比全局统一学习率效果更好。
+
+**三、直觉类比：**
+
+预训练模型 = 一个已会画画的人
+- 只训分类头：换一支新笔写字，手不动。任务和他以前画的像 → 没问题；完全不同风格 → 笔再好也没用。
+- 整体微调（小lr）：整个手都可以动，但幅度很小。既保留已有功底，又适应新风格。
+
+**四、实验验证方法——逐层解冻：**
+
+Step 1 → 只训分类头
+Step 2 → 解冻最后一层残差块
+Step 3 → 解冻最后两层
+Step 4 → 全部解冻
+
+观察每层解冻带来的准确率增量，能直观看到"哪一层对新任务特征最敏感"。解冻更多层不涨点 → 数据量不够支撑更深微调。
+
+> 实例：ResNet18做叶子分类，只训分类头仅60%，全参数微调（小lr）达94%。叶子分类需要叶脉纹理等细粒度特征，ImageNet预训练未覆盖，必须让网络去适应新特征空间。
+
+
+
+
+
+## 11. 注意力机制
+
+
+
+
+### 11.1 Encoder和Decoder
+
+
+**Encoder将数据和特征转化为一个中间态（state），然后Decoder将中间态转化为输出。例如：卷积神经网络中所有的卷积部分就是Encoder，将图片转化为张量，而最后的全连接层就是Decoder，将展平的张量转化为最终结果。**
+
+
+
+### 11.2 Seq2seq
+
+#### 11.2.1 **Seq2seq结构图**
+
+<img src="img/Seq2seq结构图.png" style="zoom:33%;" />
+
+>其中Encoder因为通常都是能看到全部的序列，所以可以设计成双向序列模型
+>但是Decoder因为要预测，所以不能设计成双向序列模型
+>
+
+#### 11.2.2 **具体工作流程**
+
+1. Encoder先对完整序列进行编码，也就是用RNN或者LSTM进行学习，将最后得到的隐藏状态向量传给Decoder。
+2. 然后Decoder接收到隐藏状态向量，然后再接收一个输入，例如图中输入```<bos>```，然后Decoder根据```hidden state```再加上输入的```<bos>```得到输出```bonjour```，然后将这个预测的```bonjour```再作为输入结合```hidden state```继续进行预测。
+3. 最后遇到```<eos>```就停下，否则会一直输出。
+
+
+#### 11.2.3 Seq2seq中解码器和编码器具体工作流程
+
+
+<img src="img/Seq2seq编码器解码器细节.png" style="zoom:33%;" />
+
+
+>其中Encoder是不需要输出的，也就是不需要全连接层，Encoder输出的Hidden state直接伴随着Decoder的输入，进入到Decoder中，也就是Hidden state从Decoder的最底层往上传。
+>然后Encoder输出的Hidden state也会作为Decoder的初始Hidden state（隐状态）。
+
+#### 11.2.4 训练流程
+
+<img src="img/Seq2seq训练.png" style="zoom:33%;" />
+
+
+1. 训练过程中Encoder正常工作
+2. 然后Decoder开始工作时，先根据传入的隐状态和输入进行预测，这个**预测不管对不对都不会当成下一层的输入**， 因为训练是知道正确的输出的，所以不管预测的对不对，只会拿正确输出作为下一轮的输入，防止模型在训练过程中严重学偏。
+
+
+#### 11.2.5 衡量模型好坏的指标
+
+
+<img src="img/衡量模型好坏的指标.png" style="zoom:33%;" />
+
+**其中的n-gram精度是指预测序列中，连续的n个预测是否出现在标签序列（非原序列而是标签序列）的概率。
+例如：1-gram，就是连续一个预测，预测序列是：A B B C D，其中A在标签序列中出现了，B出现了，第二个B重复了，不算，以此类推，P1 = 4/5；
+2-gram，就是连续两个预测，AB出现在标签序列了，BB没有，BC有，CD有，P2 = 3/4。**
+
+**BLEU是越大越好**
+
+>理论上预测越短精度越高，但是这明显是不符合直觉的，如果只预测一个A的话，只要标签序列出现过A精度就永远是1。
+>所以为了防止这种情况出现，BLEU设置了惩罚项。
+
+
+
+
+### 11.3 注意力机制（重点）
+
+#### 11.3.1 为什么需要注意力
+
+核心问题：传统Seq2Seq把整句话压缩成一个固定长度的「句子向量」，再从这个向量解码出翻译。句子越长，压缩丢失的信息越多。
+
+注意力机制解决的就是这个问题——翻译每个词时，允许模型「回头看」原文，选择性地关注相关的部分。不再把整句话压成一个死向量。
+
+**一句话总结**：注意力就是让模型学会「看哪里」，用相似度做权重，对所有信息做加权平均。
+
+---
+
+#### 11.3.2 注意力机制的7行灵魂代码
+
+```python
+def attention(query, keys, values):
+    # 第1步：算 query 和每个 key 的相似度（点积）
+    scores = [dot(query, key) for key in keys]
+    
+    # 第2步：把相似度变成权重（加起来等于1）
+    weights = softmax(scores)
+    
+    # 第3步：用权重对所有 value 做加权平均
+    output = sum(w * v for w, v in zip(weights, values))
+    
+    return output, weights
+```
+
+就这么点东西。
+
+---
+
+#### 11.3.3 软注意力 vs 硬注意力（关键理解点）
+
+**软注意力（Soft Attention）**：不是选一个最相关的词，而是**把所有词的信息按权重混合**。这意味着「it」可以同时关注「cat」和「mat」，只是关注程度不同。这是注意力机制真正神奇的地方。
+
+**硬注意力（Hard Attention）**：直接选权重最高的那个词，忽略其他。可微分性差，训练困难。
+
+---
+
+#### 11.3.4 Q、K、V 的含义——用淘宝搜索理解
+
+| 字母 | 全称 | 作用 | 类比 |
+|------|------|------|------|
+| Q | Query | 「我想找什么」——当前要生成的词需要什么信息 | 你在淘宝搜索框输入「机械键盘 红轴」 |
+| K | Key | 每个位置的「标签」——用于算相似度、决定「该看谁」 | 每个商品的标题——帮你找到它 |
+| V | Value | 每个位置「实际携带的信息」——真正做加权平均的内容 | 每个商品的详情——你要读的内容 |
+
+**核心理解**：K和V都蕴含这个token的信息——
+- **K**：token全方位的总结（语义 + 结构 + 功能 + 位置……），负责吸引注意力
+- **V**：token的具体语义含义，负责贡献实际内容
+
+**为什么K和V必须分开？**
+- 如果K=V，结构词（的、了、着、and、the、of……）会失效
+- 这些词语义内容几乎为空（V接近零向量），但结构指示性极强
+- 如果K=V，它们的K也接近零向量 → 没人会注意到它 → 修饰关系丢失
+- 后果：生成文本中形容词占据绝大多数，结构词消失——这不符合自然语言的直觉
+
+**验证**：如果把V全部设成零向量，注意力机制会正常运作（权重分布合理），但输出全为零。这是「货物崇拜注意力」——形式全部到位，信息为零。K决定「看哪里」，V决定「看到什么」，缺一不可。
+
+---
+
+#### 11.3.5 自注意力 vs 交叉注意力（别搞混）
+
+**自注意力（Self-Attention）**：Q、K、V 都来自同一句话。让一句话里的词互相看对方。
+
+> 「The cat sat on the mat」→ 每个词都和句子里所有其他词算注意力
+
+**交叉注意力（Cross-Attention）**：Q 来自一个地方（你要生成的），K、V 来自另一个地方（原文）。
+
+> 翻译场景：Q 来自目标语言（要写的中文），K、V 来自源语言（英文原文）
+
+| | 自注意力 | 交叉注意力 |
+|---|---|---|
+| Q来源 | 同一句话 | 目标序列（你要生成的） |
+| K来源 | 同一句话 | 源序列（原文） |
+| V来源 | 同一句话 | 源序列（原文） |
+| 作用 | 让词之间互相理解上下文 | 让生成时能看原文的哪里 |
+
+---
+
+#### 11.3.6 Scaled Dot-Product Attention
+
+##### 完整流程（5步）
+
+```
+输入: 三个token "I love you"，d_model = 4
+
+Step 1: 每个token投影出 Q, K, V
+Step 2: Q 和 所有K 做点积 → 分数(scores)
+Step 3: 分数 / √d → 缩放
+Step 4: softmax(缩放后分数) → 权重(weights)，总和=1
+Step 5: 权重 × V → 加权求和 → 输出
+```
+
+**用词区分（重要）**：
+
+```
+Q·K  →  分数(scores)  →  /√d  →  softmax  →  权重(weights)
+        ↑ 缩放在这里                          ↑ 这里出来的才叫权重
+```
+
+缩放的是**分数**，不是权重。权重是softmax之后的结果。
+
+##### 具体数值例子（翻译"I love you"的第三个词）
+
+```python
+Q_you = [0.2, -0.6, -0.4, 0.7]   # "you"想找什么
+K_I    = [-0.2, 0.5, 0.3, -0.1]  # "I"的身份标签
+K_love = [0.4, -0.3, 0.6, 0.2]   # "love"的身份标签
+K_you  = [0.1, 0.7, -0.5, 0.3]   # "you"的身份标签
+V_I    = [1.0, 0.0, 0.5, -0.3]   # "I"携带的语义
+V_love = [0.2, 1.5, -0.2, 0.8]   # "love"携带的语义
+V_you  = [-0.5, 0.3, 1.2, 0.4]   # "you"携带的语义
+
+# Step 2: Q_you 和 每个K 点积
+Q_you · K_I    = -0.390
+Q_you · K_love =  0.625
+Q_you · K_you  =  0.070
+
+# Step 3-4: 缩放 + softmax → 权重
+权重: [0.132,  0.557,  0.311]
+        ↑I       ↑love    ↑you
+
+# Step 5: 加权求和
+output = 0.132×V_I + 0.557×V_love + 0.311×V_you
+```
+
+解读：翻译"you"时，模型觉得"love"最相关（55.7%），"you"自己其次（31.1%），"I"最不相关（13.2%）。
+
+##### 一张图钉死整个过程
+
+```
+                    Q_you
+                     │
+                     │  点积（算相似度）
+                     ▼
+     ┌───────────────┬───────────────┬───────────────┐
+     │    K_I        │    K_love     │    K_you      │
+     │    -0.390     │    0.625      │    0.070      │  ← 分数(scores)
+     └───────────────┴───────────────┴───────────────┘
+                     │
+                     │  /√d + softmax
+                     ▼
+     ┌───────────────┬───────────────┬───────────────┐
+     │    0.132      │    0.557      │    0.311      │  ← 权重(weights)
+     └───────────────┴───────────────┴───────────────┘
+                     │
+                     │  加权求和
+                     ▼
+     output = 0.132×V_I + 0.557×V_love + 0.311×V_you
+     
+     Q是提问者，K是应答标签，V是实际内容
+     Q·K 决定"听谁的"，V 决定"听到什么"
+```
+
+##### 为什么必须缩放——实验验证
+
+点积有一个性质：向量维度d越高，点积的方差越大（约等于d）。高维空间里softmax输入过于「尖锐」→ 某个分数极大，其他趋近于零 → 梯度消失 → 模型学不动。
+
+**d=512时的实际效果**：
+
+```
+不缩放：
+Softmax权重: [~0,  1.0,  0,  0,  ~0,  ~0,  ~0,  ~0,  ~0,  ~0]
+最大权重: 1.0000  最小权重: 0.000000
+→ 退化成了硬注意力——只看一个词，其他全瞎
+
+缩放后 (除以√512 ≈ 22.6)：
+Softmax权重: [0.10, 0.38, 0.004, 0.007, 0.097, 0.082, 0.112, 0.073, 0.088, 0.057]
+最大权重: 0.3801  最小权重: 0.0038
+→ 分布合理，能看到多个相关位置
+```
+
+**为什么高维导致方差大**：点积 Q·K = q1k1 + q2k2 + ... + qdkd。d=512时，加了512个独立随机项。大数定律：维度越高，点积的绝对值倾向于越大 → softmax越尖锐 → 梯度越接近零。
+
+**解决办法**：除以 √d
+
+```python
+scores = dot(query, keys) / sqrt(d)  # 就一行，拯救整个训练
+```
+
+一个除号，决定你的模型是**读了整句话**，还是**只读了一个词**。不加scale，注意力不是在「注意力」，是在「赌博」——每次都只赌一个词，赌错了就死。
+
+---
+
+#### 11.3.7 多头注意力（Multi-Head Attention）
+
+语言中有无数种关系：语法关系、语义关系、指代关系、位置关系……
+
+**做法**：并行跑多套注意力，每套有自己的Q、K、V投影矩阵。就像戴8副不同的眼镜看同一句话——一副看「谁修饰谁」，一副看「代词指什么」，一副看「动词宾语关系」……
+
+```python
+def multi_head_attention(Q, K, V, num_heads=8):
+    outputs = []
+    for head in range(num_heads):
+        Q_h = project(Q, W_q[head])  # 每个头用自己的投影
+        K_h = project(K, W_k[head])
+        V_h = project(V, W_v[head])
+        outputs.append(scaled_dot_product_attention(Q_h, K_h, V_h))
+    return project(concat(outputs), W_o)  # 拼起来再投影
+```
+
+**工程洞察**：如果训练后发现多个头几乎一样，说明这个任务不需要那么多头——可以砍掉省算力。
+
+---
+
+#### 11.3.8 复杂度
+
+自注意力：每个词和全文每个词算一次相似度，n个词 → n×n次计算 → **O(n²)**。
+
+---
+
+#### 11.3.9 Q、K、V 的 Shape 理解——从教学到实战
+
+**核心困惑**：教学时Q是一个向量 `(d,)`，写代码时Q是三维张量 `(B, n, d)`。为什么？
+
+**答案**：逻辑完全一样，只是把多个词、多个句子同时算而已。
+
+##### 三层递进
+
+**级别1：一个词（教学用）**
+
+```
+Q = [0.2, -0.6, -0.4, 0.7]    shape = (d)         ← 一个查询向量
+K = [[...], [...], [...]]      shape = (n, d)      ← n个键向量
+
+Q · K[0] = 分数0
+Q · K[1] = 分数1     →  得到n个分数，softmax后得n个权重
+Q · K[2] = 分数2
+```
+
+##### 级别2：一句话（n个词同时算）
+
+一句话3个词 "I love you"，每个词都有自己的Q：
+
+```
+Q = [[ 0.3, -0.1,  0.8,  0.2],   ← Q_I   词1在问"该看谁"
+     [-0.5,  0.4,  0.1, -0.3],   ← Q_love 词2在问"该看谁"
+     [ 0.2, -0.6, -0.4,  0.7]]   ← Q_you 词3在问"该看谁"
+     
+shape = (n, d)    n=seq_len, d=d_model
+```
+
+矩阵乘法一次性算出所有词对：
+
+```
+scores = Q @ K.T     (n,d) @ (d,n) = (n,n)
+
+          K_I  K_love  K_you
+   Q_I  [ 0.8   0.2    0.1  ]   ← Q_I 对各词的注意力分数
+Q_love  [ 0.1   0.9    0.5  ]   ← Q_love 对各词的注意力分数
+ Q_you  [-0.4   0.6    0.07 ]   ← Q_you 对各词的注意力分数
+
+每一行 = 一个词对整句话的注意力分布
+scores[i][j] = 第i个词认为第j个词有多重要
+```
+
+##### 级别3：一个batch（B句话并行）
+
+GPU不喜欢一次只算一句话，一次扔进去32句：
+
+```
+Q shape = (B, n, d)
+          ↑   ↑   ↑
+        batch  seq  d_model
+        32句  每句 每个token
+              5词 的向量维度
+```
+
+32句话并行，矩阵乘法逻辑完全一样——只是B维度原样保留：
+
+```python
+scores = Q @ K.transpose(-2, -1)
+# (B, n, d) @ (B, d, n) = (B, n, n)
+#  32句话   每句话得到一个 n×n 的注意力矩阵
+```
+
+##### 三个 Shape 对照表
+
+| | Q shape | K shape | V shape | scores shape | output shape |
+|---|---|---|---|---|---|
+| 一个词 | `(d,)` | `(n, d)` | `(n, d)` | `(n,)` | `(d,)` |
+| 一句话 | `(n, d)` | `(n, d)` | `(n, d)` | `(n, n)` | `(n, d)` |
+| 一个batch | `(B, n, d)` | `(B, n, d)` | `(B, n, d)` | `(B, n, n)` | `(B, n, d)` |
+
+##### 关键操作：`.transpose(-2, -1)` 不是 `.T`
+
+```python
+# ✗ 错误：.T 把所有维度全反转，batch维度也被动了
+scores = Q @ K.T   # (B,n,d) @ (d,n,B) → 维度错乱
+
+# ✓ 正确：只交换最后两维，batch维度不动
+scores = Q @ K.transpose(-2, -1)  # (B,n,d) @ (B,d,n) = (B,n,n)
+```
+
+`.transpose(-2, -1)` = 倒数第二维和最后一维交换。
+K从 `(B, n, d)` → `(B, d, n)`，batch维度原封不动。
+
+##### 本质
+
+Q里的每一个词向量做的事，和单向量教学版**完全一样**——点积、算分数、加权V。只是把所有词、所有句子**同时做**了而已。这就是矩阵乘法的力量。
+
+
+
+### 11.4 正则表达式
+
+
+#### 11.4.1 为什么NLP需要正则
+
+英文文本预处理（清洗、分词、去噪）离不开正则表达式。一个正则能省几十行手动处理代码。
+
+#### 11.4.2 基本语法速查
+
+##### 字符匹配
+
+| 符号 | 含义 | 示例 | 匹配结果 |
+|------|------|------|----------|
+| `.` | 任意一个字符（除换行） | `a.b` | `aab`, `acb`, `a b` |
+| `\d` | 数字 [0-9] | `\d+` | `123`, `456` |
+| `\w` | 字母数字下划线 [a-zA-Z0-9_] | `\w+` | `hello`, `var_1` |
+| `\s` | 空白符（空格、tab、换行） | `a\s+b` | `a b`, `a  b` |
+| `\D` | 非数字 | `\D+` | `abc` |
+| `\W` | 非字母数字下划线 | `\W+` | `!!!`, `@#$` |
+| `\S` | 非空白符 | `\S+` | `hello` |
+
+##### 数量
+
+| 符号 | 含义 | 示例 |
+|------|------|------|
+| `*` | 0次或多次 | `ab*c` 匹配 `ac`, `abc`, `abbbc` |
+| `+` | 1次或多次 | `ab+c` 匹配 `abc`, `abbbc`（不匹配 `ac`）|
+| `?` | 0次或1次 | `ab?c` 匹配 `ac`, `abc` |
+| `{n}` | 恰好n次 | `\d{3}` 匹配 `123`, `456` |
+| `{n,}` | 至少n次 | `\d{3,}` 匹配 `123`, `456789` |
+| `{n,m}` | n到m次 | `\d{2,4}` 匹配 `12`, `123`, `1234` |
+
+##### 边界
+
+| 符号 | 含义 |
+|------|------|
+| `^` | 字符串开头 |
+| `$` | 字符串结尾 |
+| `\b` | 单词边界 |
+
+> `^The` → 以"The"开头的字符串
+> `\bcat\b` → 只匹配单词"cat"，不匹配"caterpillar"或"concatenate"
+
+##### 字符类
+
+| 写法 | 含义 |
+|------|------|
+| `[abc]` | a、b、c 中任意一个 |
+| `[a-z]` | a到z任意一个小写字母 |
+| `[A-Z]` | A到Z任意一个大写字母 |
+| `[a-zA-Z]` | 任意一个字母 |
+| `[^abc]` | **不是**a、b、c的任意字符 |
+
+##### 分组与或
+
+| 符号 | 含义 |
+|------|------|
+| `(abc)` | 分组，把abc当成一个整体 |
+| `(abc\|def)` | abc 或 def |
+| `(?:abc)` | 非捕获分组（只用于组织，不提取） |
+
+#### 11.4.3 NLP中最常用的几个正则
+
+```python
+import re
+
+# 1. 转小写 + 去掉标点符号
+text = "Hello, World! How are you?"
+cleaned = re.sub(r'[^\w\s]', '', text.lower())
+# → "hello world how are you"
+
+# 2. 去掉HTML标签
+text = "<p>Hello <b>World</b></p>"
+cleaned = re.sub(r'<[^>]+>', '', text)
+# → "Hello World"
+
+# 3. 去掉多余空格（包括换行、tab）
+text = "Hello   World\n\t  !"
+cleaned = re.sub(r'\s+', ' ', text).strip()
+# → "Hello World !"
+
+# 4. 去掉数字
+text = "I have 3 apples and 15 bananas"
+cleaned = re.sub(r'\d+', '', text)
+# → "I have  apples and  bananas"
+
+# 5. 只保留字母和空格
+text = "Hello!!! 123 World @#$"
+cleaned = re.sub(r'[^a-zA-Z\s]', '', text)
+# → "Hello  World "
+
+# 6. 匹配网址
+text = "Visit https://www.google.com now"
+urls = re.findall(r'https?://\S+', text)
+# → ['https://www.google.com']
+
+# 7. 分词（split）
+text = "Hello, World! How are you?"
+tokens = re.split(r'\s+|[,!?]', text.lower())
+tokens = [t for t in tokens if t]  # 去掉空字符串
+# → ['hello', 'world', 'how', 'are', 'you']
+```
+
+#### 11.4.4 核心理解
+
+**`r'...'`**：Python里用 `r` 前缀，让反斜杠 `\` 不被转义。`r'\d'` 等于正则里的 `\d`，如果用普通字符串得写成 `'\\d'`。
+
+**`re.sub(pattern, replacement, text)`**：查找并替换。`re.sub(r'\d+', '', text)` = 把所有数字删掉。
+
+**`re.findall(pattern, text)`**：返回所有匹配项的列表。
+
+**`re.split(pattern, text)`**：按模式切分字符串。
+
+**`re.search(pattern, text)`**：找到第一个匹配，返回Match对象（或None）。
+
+##### 贪婪 vs 非贪婪（重点）
+
+| 写法 | 含义 |
+|------|------|
+| `.*` | 贪婪：尽可能多匹配 |
+| `.*?` | 非贪婪：尽可能少匹配 |
+
+```python
+text = "<p>Hello</p><p>World</p>"
+re.findall(r'<p>.*</p>', text)   # → ['<p>Hello</p><p>World</p>']  全吞了
+re.findall(r'<p>.*?</p>', text)  # → ['<p>Hello</p>', '<p>World</p>']  正确
+```
+
+NLP清洗中**几乎永远用非贪婪**`.*?`，否则一句话里的标签会被一股脑吞掉。
+
+#### 11.4.5 collections.Counter —— 词频统计的瑞士军刀
+
+`Counter` 是 `collections` 模块里最常用的类，NLP建词表时**离不开它**。
+
+##### 基本用法
+
+```python
+from collections import Counter
+
+# 创建：传入可迭代对象
+words = ['i', 'love', 'you', 'i', 'love', 'love']
+c = Counter(words)
+print(c)
+# Counter({'love': 3, 'i': 2, 'you': 1})
+
+# 也可以从字符串创建（统计字符）
+c = Counter('hello')
+print(c)
+# Counter({'l': 2, 'h': 1, 'e': 1, 'o': 1})
+```
+
+##### 常用操作
+
+```python
+c = Counter(['i', 'love', 'you', 'i', 'love', 'love'])
+
+# 1. 查频率
+print(c['love'])   # 3
+print(c['cat'])    # 0（不存在的返回0，不报错！）
+
+# 2. 出现次数最多的前k个
+print(c.most_common(2))
+# [('love', 3), ('i', 2)]
+
+# 3. 转普通字典
+d = dict(c)
+# {'i': 2, 'love': 3, 'you': 1}
+
+# 4. 更新（累加）
+c.update(['i', 'cat'])
+# Counter({'love': 3, 'i': 3, 'you': 1, 'cat': 1})
+
+# 5. elements() —— 按计数展开
+print(list(c.elements()))
+# ['i', 'i', 'love', 'love', 'love', 'you']
+```
+
+##### NLP实战：从文本到词表
+
+```python
+from collections import Counter
+import re
+
+texts = [
+    "The cat sat on the mat.",
+    "The dog sat on the log.",
+    "The cat and the dog played."
+]
+
+# 1. 清洗 + 分词 + 统计
+all_tokens = []
+for text in texts:
+    cleaned = re.sub(r'[^\w\s]', '', text.lower())  # 去标点 + 小写
+    tokens = cleaned.split()
+    all_tokens.extend(tokens)
+
+counter = Counter(all_tokens)
+print(counter)
+# Counter({'the': 6, 'cat': 2, 'sat': 2, 'on': 2, 'dog': 2, 'mat': 1, 'log': 1, 'and': 1, 'played': 1})
+
+# 2. 建词表（word → idx）
+# 特殊token：<PAD>=0（填充）, <UNK>=1（未知词）
+vocab = {'<PAD>': 0, '<UNK>': 1}
+for word, freq in counter.most_common():
+    vocab[word] = len(vocab)
+
+print(f"词表大小: {len(vocab)}")  # 11
+
+# 3. 低频词过滤——只保留出现≥2次的词
+min_freq = 2
+frequent_words = [w for w, f in counter.items() if f >= min_freq]
+print(frequent_words)
+# ['the', 'cat', 'sat', 'on', 'dog']
+
+# 4. 句子 → 索引序列
+def text_to_ids(sentence, vocab):
+    cleaned = re.sub(r'[^\w\s]', '', sentence.lower())
+    tokens = cleaned.split()
+    return [vocab.get(t, 1) for t in tokens]  # 未知词用<UNK>=1
+
+print(text_to_ids("The cat and the bird.", vocab))
+# [2 ('the'), 3 ('cat'), 9 ('and'), 2 ('the'), 1 ('bird'=<UNK>)]
+```
+
+##### Counter 为什么比手动统计好
+
+| 手动写法 | Counter |
+|---------|---------|
+| `d[key] = d.get(key, 0) + 1` | `Counter(list)` |
+| 取top-k要 `sorted` + 切片 | `.most_common(k)` 一行 |
+| 访问不存在的key会报错 | 返回0，不报错 |
+
+##### 小结
+
+```
+Counter(list)          → 生成计数
+c.most_common(k)       → 词频最高k个（建词表）
+c.get(word, 0)          → 查词频，没有返回0
+dict(c.most_common())   → 转{word: freq}字典
+```
+
+建词表流程：`读数据 → 分词 → Counter统计 → 过滤低频 → word→idx映射`。
