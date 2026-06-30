@@ -263,13 +263,21 @@ tensor_img = transform(img)   # 输出张量，每个通道满足近似 N(0,1) �
 **类比**
 
 > Dataset是一副牌，Dataset中的每一个样本是一张牌，那么DataLoader就是发牌器。
+>
 > **dataset参数**：告诉发牌器，你的牌是哪一副。
+>
 > **batch_size参数**：告诉发牌器，一次发多少张。
+>
 > **shuffle参数**：告诉发牌器，是否洗牌（打乱数据顺序）
+>
 > **drop_last参数**：如果有100张牌，每次发3张，必定会余1张牌，那么当drop_last=True时会抛弃（drop）最后一张牌，当drop_last=False时不抛弃最后一张牌。
+>
 > **num_workers参数**：工作线程数，如果工作量太大可以通过增加num_workers来减少工作时间。
+>
 > **pin_memory = True参数**：把数据锁在CPU固定内存内，往GPU拷贝的时候更快，配合```.to(m_device, non_blocking=True)```（锁定存储数据的内存页，不会被替换到磁盘中），效果更佳。
+>
 > **persistent_workers = True参数**：（避免每个epoch都重开进程）
+>
 > **prefetch_factor = 4参数**：预获取更多batch的数据，减少GPU等待时间，默认2。
 
 ```python
@@ -4925,6 +4933,162 @@ Step 4 → 全部解冻
 观察每层解冻带来的准确率增量，能直观看到"哪一层对新任务特征最敏感"。解冻更多层不涨点 → 数据量不够支撑更深微调。
 
 > 实例：ResNet18做叶子分类，只训分类头仅60%，全参数微调（小lr）达94%。叶子分类需要叶脉纹理等细粒度特征，ImageNet预训练未覆盖，必须让网络去适应新特征空间。
+
+
+
+
+### 10.5 Plant Pathology 2021 - FGVC8项目
+
+#### 10.5.1 项目概况
+
+- **任务**：苹果叶片病害分类，数据集 ~18k 张（4000×2672 高清 JPEG），12 个类别
+- **模型**：ResNet18，全参数微调
+- **硬件**：RTX 4060 8GB，双系统（Windows 数据分区 + Linux 训练环境）
+
+#### 10.5.2 数据增强（Data Augmentation）
+
+**项目中的演变过程**：
+
+| 阶段 | transforms | 问题 |
+|------|-----------|------|
+| 初版 | `RandomHorizontalFlip` + `RandomRotation(30)` + `Resize(512)` + `RandomCrop(512)` | `RandomCrop` 在 512×512 图上裁 512 永远是原图，形同虚设 |
+| 改进 | 替换为 `RandomResizedCrop(512, scale=(0.5, 1.0))` | 随机缩放+裁切，真正起增强作用 |
+| 过拟合后 | 加入 `ColorJitter`、`RandomErasing`、`label_smoothing=0.1` | 丰富颜色/光照变化 + 随机遮挡 + 软化标签 |
+
+**最终训练 transforms**：
+
+```python
+transforms = v2.Compose([
+    v2.RandomResizedCrop(512, scale=(0.5, 1.0)),   # 随机缩放+裁切
+    v2.RandomHorizontalFlip(0.5),                    # 水平翻转
+    v2.RandomVerticalFlip(0.2),                      # 垂直翻转（叶片方向不固定）
+    v2.RandomRotation(15),                           # 轻微旋转
+    v2.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+    v2.ToDtype(torch.float32, scale=True),           # uint8 → float32 [0,1]
+    v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    v2.RandomErasing(p=0.2, scale=(0.02, 0.1)),     # 随机遮挡，防模型只盯一个区域
+])
+```
+
+**核心经验**：
+
+1. **`RandomResizedCrop` 优于 `Resize + RandomCrop`**：前者在每个 epoch 对每张图做不同缩放比例和位置的裁切，后者当图尺寸等于裁切尺寸时退化到 no-op。`scale` 参数控制缩放范围，`(0.5, 1.0)` 意味着随机缩到原图的 50%-100%，模拟近景远景变化。
+
+2. **`ColorJitter` 对病害分类很重要**：真实场景光照差异大，模型不应依赖特定色调。brightness/contrast/saturation 设 0.2 左右不会破坏叶片纹理，但能迫使模型关注形状和病斑纹理而非颜色。
+
+3. **`RandomErasing` 强制多区域学习**：随机擦除一块矩形，模型不能只靠最显著的一片病斑判断，必须学会综合多处区域。`scale` 控制擦除区域占比，0.02-0.1 不会盖掉整个病斑。erase 值默认填 0，在 Normalize 后对应 ImageNet 均值色，视觉上自然；也可放 Normalize 前（填纯黑），效果类似。
+
+4. **`label_smoothing=0.1`**：交叉熵损失要求模型输出 one-hot 般的高置信度，容易过拟合。平滑后 soft target（如 `[0.08, 0.08, ..., 0.92]` 而非 `[0, 0, ..., 1]`）让模型不那么"死记"，对多分类（尤其是类别数多）减轻过拟合效果明显。
+
+5. **`Normalize` 必须在 `ToDtype` 之后**：`scale=True` 将 uint8 [0,255] 转为 float [0,1]，然后 Normalize 用 ImageNet 均值/标准差做标准化。缺这一步预训练权重直接失效。注意 `ToImage()` 在 torchvision ≥0.15 后通常不需要手动加，`ToDtype` 已处理。
+
+6. **训练/验证 transforms 不对称原则**：训练用 `RandomResizedCrop`（随机裁切），验证用 `Resize + CenterCrop`（确定性中心裁切），避免验证时引入随机性。验证集不加 ColorJitter/RandomErasing 等只对训练有效的增强。
+
+#### 10.5.3 性能调试
+
+**GPU 利用率忽高忽低**：
+
+GPU-Util 从 90%+ 骤降到 ~0 再回升，是**数据加载瓶颈**的典型症状。GPU 算完一个 batch 后，CPU 还没来得及把下一个 batch 准备好，GPU 空转等待。
+
+**解决路径**：
+
+| 优先级 | 方法 | 原理 |
+|--------|------|------|
+| 1 | 预处理：一次性 resize 所有图到目标尺寸 | 4000×2672 → 512×512，跳过实时 decode+resize，I/O 量降 ~20 倍，每张图从 2-4MB 降到 ~80KB |
+| 2 | `torch.backends.cudnn.benchmark = True` | 固定输入尺寸下，cuDNN 前几次迭代试跑所有卷积算法后自动选最快，比默认启发式快 10-20% |
+| 3 | 数据从 NTFS 分区拷到 Linux 本地磁盘 | 消除跨文件系统挂载开销，实测慢 10-20%，不多但能省则省 |
+| 4 | 调整 `num_workers` | worker 不是越多越好。有 I/O 瓶颈时 8→4 反而更稳，避免多 worker 争抢同一磁盘带宽 |
+| 5 | `pin_memory=True` + `non_blocking=True` | 锁定内存页加速 Host→Device 传输；异步拷贝不阻塞 GPU 当前计算 |
+
+**扩展示例——用 torch.profiler 定位瓶颈更精确**：
+
+```python
+# 初级：用 time 看每个 epoch 耗时
+# 进阶：用 torch.profiler 看 DataLoader 时间和 GPU 时间占比
+with torch.profiler.profile(
+    activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+    with_stack=True
+) as prof:
+    for batch in dataloader:
+        ...
+print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+```
+
+如果 DataLoader 的 CPU 时间占比 > GPU kernel 时间，就确认是 I/O 瓶颈。
+
+**显存管理实践**：
+
+- 4000×2672 原图解码为 float32 tensor 约 `3×4×4000×2672 ≈ 122MB`，batch=32 仅输入就是 ~3.9GB
+- Resize 到 512×512 后单张 ~3MB，batch=32 约 100MB
+- ResNet18（11.7M 参数）+ AdamW 优化器状态 ≈ 200MB
+- 训练时显存稳定在 ~6.9GB/8GB（85%），有余量但不算充裕。若 OOM，优先降 batch_size 或改用混合精度 AMP
+
+**预处理脚本——一次性操作，永久受益**：
+
+```python
+# 遍历原图 → PIL resize 到目标尺寸 → 存到独立目录
+# 之后训练直接读小图，DataLoader 不再做昂贵的实时 decode+resize
+output_dir = 'data/train_img_512/'
+os.makedirs(output_dir, exist_ok=True)
+for img_name in img_list:
+    img = Image.open(os.path.join(src_dir, img_name))
+    img = img.resize((512, 512))
+    img.save(os.path.join(output_dir, img_name))
+```
+
+20k 张图预处理约 25 分钟，但此后每个 epoch 都免去实时 decode 开销。处理完后图从总计 20-40GB 缩到 1-2GB。
+
+**训练速度对照**（4060, 512×512）：
+
+| 模型 | 参数量 | 速度 | 每 epoch |
+|------|--------|------|----------|
+| ResNet34 | 21.3M | ~30 img/s | ~9 min |
+| ResNet18 | 11.7M | ~55 img/s | ~5 min |
+
+ResNet18 比 ResNet34 快 ~45%，精度掉 1-3 个百分点，在 12 分类场景下可以接受。
+
+#### 10.5.4 训练策略
+
+| 决策 | 理由 |
+|------|------|
+| 全参数微调（lr=1e-4） | 20k 数据足够，叶片纹理与 ImageNet 差异大，只训分类头学不到病害特征 |
+| AdamW vs SGD | AdamW 指数移动平均动量 + 解耦权重衰减，收敛稳定；SGD 需精细调参，容易翻车 |
+| weight_decay=1e-4 | L2 正则惩罚系数，偏保守；过拟合时可提至 5e-4 甚至 1e-3 |
+| `ReduceLROnPlateau(patience=3, factor=0.5)` | 验证 loss 连续 3 epoch 不降时自动将 lr 缩半，比固定 StepLR 对过拟合更敏感 |
+| epochs=30 + 早停(patience=5) | 双层保护：早停在先，固定轮数在后。20k 数据全参数微调通常 10-20 epoch 即收敛 |
+
+#### 10.5.5 核心教训：多标签 vs 多分类
+
+**90% 准确率瓶颈不在代码，在标签体系**。
+
+数据集本质是**多标签任务**——一张叶片可同时患多种病（如 `scab + frog_eye_leaf_spot`），数据提供方将 6 种病的所有组合拍平成 12 个"伪多分类"类别。
+
+后果：
+- 纯单病类（healthy, scab, powdery_mildew）样本充沛，正确率 95%+
+- 复合病类样本极少（`rust complex` 仅 3 张，`rust frog_eye_leaf_spot` 仅 9 张），模型完全学不到，正确率 0%
+- 复合类本质共享单病特征（`scab frog_eye_leaf_spot` 和 `scab` 共享 scab 特征），被强行独立后信息断裂，复合类学不到任何有用信号
+
+**正确做法**：6 个独立二分类头 + `BCEWithLogitsLoss`，每张图同时预测 6 个标签。推断时若同时命中 `scab` 和 `frog_eye_leaf_spot`，即为该复合病。稀有组合也能从单病样本中共享特征，样本量不再为零。
+
+> 这个问题在医学影像、农业病害、遥感等需要多标签分类的场景普遍存在。如果数据集有复合标签，务必在开始训练前想清楚：拍平多分类还是多标签？拍平的代价是稀有复合类 = 0 样本。
+
+#### 10.5.6 早停思路：Generalization Gap
+
+训练 loss 和验证 loss 的比值/差值可作为补充早停信号——即便验证 loss 还在震荡，若 gap 持续扩大，说明模型已开始死记训练集。
+
+该方法最早见于 **Prechelt (1998)** "Early Stopping — But When?"，提出 GL (Generalization Loss) = (当前验证 loss / 历史最低验证 loss - 1) × 100。Kaggle 社区也常用 train/test loss ratio。建议配合验证 loss 判断，不单独使用，避免训练早期 gap 大时误停。
+
+#### 10.5.7 环境速查
+
+| 问题 | 解决 |
+|------|------|
+| torchvision ≥0.15 `read_image` 路径变更 | `from torchvision.io import read_image` |
+| Tensor 无 `.show()` | `to_pil_image(tensor).show()` |
+| 模型 fc 替换后仍在 CPU | 先 `model.fc = nn.Linear(...)` 再 `model.to(device)` |
+| `CrossEntropyLoss` 要求 target shape | `(batch,)` 一维整数类标，`(batch, 1)` 会报错 |
+| Ubuntu 锁屏不影响训练，休眠会中断 | `sudo systemctl mask sleep.target suspend.target` |
+
+
 
 ## 11. 注意力机制
 
