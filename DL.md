@@ -5088,7 +5088,142 @@ ResNet18 比 ResNet34 快 ~45%，精度掉 1-3 个百分点，在 12 分类场�
 | `CrossEntropyLoss` 要求 target shape | `(batch,)` 一维整数类标，`(batch, 1)` 会报错 |
 | Ubuntu 锁屏不影响训练，休眠会中断 | `sudo systemctl mask sleep.target suspend.target` |
 
+### 10.6 dog-breed-identification
 
+#### 项目概述
+
+Kaggle 竞赛项目：给定一张狗的图片，识别其品种（共 120 类）。训练集约 10000 张图片，使用 PyTorch + torchvision 搭建深度学习分类 pipeline。
+
+**最终方案**：ResNet50 + 384×384 输入 + 强数据增强 + Label Smoothing + CosineAnnealingLR + 早停，验证集正确率约 82%。
+
+---
+
+#### 数据处理
+
+**1. 标签映射（labels.csv → 整数类标）**
+
+`labels.csv` 包含两列：`id`（图片文件名）和 `breed`（品种名，如 `"beagle"`）。`CrossEntropyLoss` 要求 target 是整数索引（0~119），因此需要建立品种名到数字的双向映射：
+
+```python
+# str2num: {"beagle": 0, "poodle": 1, ...}
+# num2str: {0: "beagle", 1: "poodle", ...}
+def str2num():
+    return {key: value for value, key in enumerate(all_data_pd.iloc[:, 1].unique())}
+```
+
+在自定义 `Dataset.__getitem__` 中完成映射：`label = self.str2num[label]`。
+
+**关键点**：`str2num()` 和 `num2str()` 必须基于同一份 `unique()` 结果，否则字典不一致会导致映射错位。
+
+**2. 数据集划分**
+
+使用 `sklearn.model_selection.train_test_split` 按 8:2 划分，关键参数：
+
+- `stratify=all_data_df['breed']`：按品种分层抽样，确保训练集和验证集中每个品种的比例相同，避免某些稀有品种全部落入验证集
+- `random_state=42`：固定随机种子，保证划分可复现
+
+**3. 图片读取**
+
+使用 `torchvision.io.read_image()` 读取图片，返回 `Tensor[C, H, W]`（uint8, [0, 255]）。与 PIL `Image.open()` 的区别：`read_image` 直接返回 Tensor，省去 PIL→Tensor 转换步骤。
+
+**注意**：`os.path.join(root_path, img_path + ".jpg")` 中 `.jpg` 必须拼在 `img_path` 后面作为文件名的一部分，不能作为独立参数传给 `os.path.join`（否则会被当作子目录名，生成错误路径如 `.../id/.jpg`）。
+
+**4. DataLoader 优化**
+
+```python
+DataLoader(
+    dataset=train_dataset, batch_size=batch_size, shuffle=True,
+    num_workers=num_workers, pin_memory=True,
+    persistent_workers=True, prefetch_factor=4
+)
+```
+
+| 参数 | 作用 |
+|------|------|
+| `pin_memory=True` | 将数据锁页到 CPU 内存，加速 CPU→GPU 传输 |
+| `persistent_workers=True` | worker 进程跨 epoch 复用，避免每个 epoch 重新 fork |
+| `prefetch_factor=4` | 每个 worker 提前加载 4 个 batch，减少 GPU 等待 |
+| `shuffle` | 训练集 `True`，验证集 `False`（验证不需要打乱） |
+
+---
+
+#### 过拟合优化（核心）
+
+这是本项目最大的挑战。120 类细粒度分类 + 仅 ~10000 张图，模型极易过拟合。优化过程如下：
+
+**阶段 1：轻量数据增强（baseline → 验证 loss 持续上升，正确率 ~65%）**
+
+初始 transforms 仅包含 `Resize(224) + RandomHorizontalFlip(0.5) + RandomRotation(15)`，训练几轮后训练 loss 持续下降但验证 loss 反弹上升——典型过拟合。
+
+**阶段 2：强数据增强（验证正确率 ~72%，过拟合缓解但仍有）**
+
+```python
+v2.Compose([
+    v2.RandomResizedCrop(224, scale=(0.7, 1.0)),  # 随机裁剪代替固定 Resize
+    v2.RandomHorizontalFlip(0.5),
+    v2.RandomRotation(15),
+    v2.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+    v2.ToDtype(torch.float32, scale=True),
+    v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    v2.RandomErasing(p=0.3),
+])
+```
+
+| 增强 | 合理性分析 |
+|------|-----------|
+| `RandomResizedCrop(224, scale=(0.7, 1.0))` | 模拟不同拍摄距离、部分遮挡，比固定 Resize 更丰富 |
+| `RandomHorizontalFlip(0.5)` | 狗可以朝左也可以朝右，不改变品种 |
+| `RandomRotation(±15°)` | 手持拍照轻微倾斜，超过 15° 不真实 |
+| `ColorJitter(0.2)` | 模拟光照/白平衡差异；幅度不超过 0.3，因为狗品种依赖颜色特征（如哈士奇黑白花纹 vs 阿拉斯加纯白） |
+| `RandomErasing(p=0.3)` | 模拟遮挡（树叶、栏杆），迫使模型不只盯脸，也学耳朵/体型/尾巴 |
+
+**重要**：测试集只做 `Resize + ToDtype + Normalize`，不做任何随机增强。
+
+**但过拟合仍未消除**——训练 loss 从 1.40 降到 1.26，验证 loss 在 1.69 附近震荡不降。说明仅靠数据增强不够，模型仍有能力记住训练样本。
+
+**阶段 3：正则化 + 学习率调度（过拟合被压制）**
+
+| 措施 | 原理 | 配置 |
+|------|------|------|
+| `weight_decay` | L2 正则惩罚，限制权重幅度 | 从 `1e-4` 提升到 `1e-3`（原值太小等于没加） |
+| `label_smoothing` | 标签软化，防止模型对预测过于自信 | `CrossEntropyLoss(label_smoothing=0.1)`，将 hard target `[0,0,1,0]` 软化为 `[0.0008, 0.0008, 0.9, 0.0008]` |
+| `CosineAnnealingLR` | 学习率随训练周期从初始值余弦衰减到 0 | `CosineAnnealingLR(optimizer, T_max=epochs)` |
+| 早停 (Early Stopping) | 验证 loss 连续不降时停止训练 | `patience=5`，保存 `best_model.pkl` |
+
+**阶段 4：更高分辨率 + 更深网络（验证正确率 ~82%）**
+
+细粒度分类需要捕捉狗品种之间的细微差异（耳朵形状、毛色分布等），224×224 压缩太狠会丢失关键特征。两项调整：
+
+1. **输入分辨率**：224 → 384
+   - ResNet 的 AdaptiveAvgPool 会处理任意尺寸，384×384 不会改变输出形状，只是中间特征图更大
+   - 代价：显存增加 → `batch_size` 从 64 降到 16（8GB RTX 4060）
+
+2. **Backbone**：ResNet34 → ResNet50
+   - ResNet34 只 21M 参数，receptive field 偏浅
+   - ResNet50 的 bottleneck 结构（1×1→3×3→1×1）对细粒度特征提取能力更强
+   - 加载 ImageNet 预训练权重：`resnet50(weights=ResNet50_Weights.DEFAULT)`
+
+**过拟合优化总结**：
+
+| 轮次 | 措施 | 原理 |
+|------|------|------|
+| 1 | 数据增强（裁剪/翻转/旋转/颜色抖动/随机遮挡） | 让模型看到更多变化，减少对特定像素的依赖 |
+| 2 | weight_decay 1e-4 → 1e-3 | 更强的 L2 正则化约束 |
+| 3 | Label Smoothing 0.1 | 防止模型过度自信，给错误类别留概率空间 |
+| 4 | CosineAnnealingLR | 学习率从 1e-4 余弦衰减到 0，后期用小 lr 精调 |
+| 5 | 分辨率 224→384 | 保留更多细节特征用于细粒度判别 |
+| 6 | ResNet34→ResNet50 | 更强的特征提取能力 |
+
+**未实施但值得尝试的方向**：MixUp/CutMix（批次内图像混合）、EfficientNet-B3（更现代的 backbone）、TTA（测试时增强取平均）。
+
+---
+
+#### 其他经验
+
+- **显存管理**：384×384 + ResNet50 在 8GB 显存上 batch_size=32 会 OOM，降到 16 后正常。可通过 `nvidia-smi` 或 `torch.cuda.memory_summary()` 监控显存。
+- **Loss 图记录粒度**：记录 per-batch loss 会导致图上有几千个噪点、完全不可读，应改为每个 epoch 记录一次平均 loss，横轴用 epoch 编号。
+- **预训练权重的 Normalize**：必须使用 ImageNet 统计值 `mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]`，否则预训练权重失效。
+- **Kaggle API 401 错误**：竞赛数据集需要在 Kaggle 网页上点击 "Join Competition" 接受规则后 API 才能下载。
 
 ## 11. 注意力机制
 
