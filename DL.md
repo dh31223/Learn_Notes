@@ -740,6 +740,82 @@ train_transform = v2.Compose([
     v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 ```
+---
+
+
+
+
+**!!!超!!!级!!!重!!!点!!!**
+
+##### 1.8.7.1 **各类数据增强如何根据具体情况搭配使用**
+
+数据增强方法分为两大类：**像素级变换**（只改像素值，不改位置）和**空间级变换**（改变位置，标注框/分割mask需同步变换）。
+
+---
+
+**像素级变换（只改像素值）**
+
+| 方法 | 直观效果 | 适用场景 |
+|------|----------|----------|
+| `RandomBrightnessContrast` | 图片变亮/变暗/对比度变强 | 不同光照条件（白天/夜晚） |
+| `HueSaturationValue` | 色调偏移、饱和度变化 | 不同相机/滤镜导致的颜色差异 |
+| `GaussNoise` | 加噪点（像老电视雪花） | 低光拍摄、传感器噪声 |
+| `GaussianBlur` | 变模糊 | 运动模糊、对焦不准 |
+| `CLAHE` | 直方图均衡化，细节更清晰 | 过曝/欠曝场景 |
+| `ColorJitter` | 亮度+对比度+饱和度+色调 随机组合 | 通用颜色鲁棒性 |
+
+---
+
+**空间级变换（改变空间位置）**
+
+| 方法 | 直观效果 | 适用场景 |
+|------|----------|----------|
+| `HorizontalFlip` | 左右镜像 | 通用（大部分自然图像） |
+| `VerticalFlip` | 上下翻转 | 航拍图、显微镜图像 |
+| `Rotate` | 旋转一定角度 | 拍摄角度变化 |
+| `RandomScale` | 放大/缩小 | 目标距离远近变化 |
+| `RandomCrop` | 随机裁一块 | 目标不完整/遮挡场景 |
+| `RandomResizedCrop` | 随机裁一块再缩放到固定尺寸 | 分类任务标配，兼顾尺寸统一+空间多样性 |
+| `ShiftScaleRotate` | 平移+缩放+旋转三合一 | 通用空间鲁棒性 |
+| `GridDistortion` | 局部扭曲变形 | 镜头畸变、水面倒影 |
+| `ElasticTransform` | 弹性形变（像捏橡皮泥） | 医学图像、手写字体 |
+
+---
+
+**高级混合增强**
+
+| 方法 | 直观效果 | 适用场景 |
+|------|----------|----------|
+| `Cutout` / `CoarseDropout` | 随机盖掉一块矩形区域 | 遮挡鲁棒性 |
+| `MixUp` | 两张图按比例混合 | 提高泛化、防止过拟合 |
+| `CutMix` | 把图A的一块贴到图B上 | 目标检测/分类正则化 |
+| `Mosaic` | 四张图拼成一张 | YOLO系列标配 |
+
+---
+
+**场景 x 方法搭配速查表**
+
+| 场景 | 推荐组合 |
+|------|----------|
+| 自然图像分类（猫狗、花） | `HorizontalFlip` + `Rotate(±15°)` + `ColorJitter` + `RandomCrop` |
+| 目标检测（YOLO） | `Mosaic` + `HorizontalFlip` + `ShiftScaleRotate` + `HSV` |
+| 语义分割（道路、医疗） | `HorizontalFlip` + `RandomScale` + `GridDistortion` + `RandomBrightnessContrast` |
+| 低光照/夜景 | `RandomBrightnessContrast(偏暗)` + `GaussNoise` + `CLAHE` |
+| 航拍/遥感 | `VerticalFlip` + `Rotate(0~360°)` + `RandomScale` |
+| OCR/文字识别 | `ElasticTransform`（模拟手写变形）+ `GridDistortion` |
+| 防止过拟合 | 在以上基础上 + `CoarseDropout` 或 `CutMix` |
+
+---
+
+**搭配原则**
+
+1. **先空间后像素**：空间变换改变位置，像素变换改变颜色，两者可叠加
+2. **不要过度增强**：增强太激进会让模型学不到真实分布，参数设小一点（如旋转±15°而不是±90°，亮度±0.2而不是±0.5）
+3. **考虑任务特点**：上下翻转对猫狗分类没用（猫不会倒着出现），但对航拍图非常重要
+4. **验证集不要增强**：验证/测试只用 `Resize` + `Normalize`，保持评估的一致性
+5. **标注同步**：目标检测和分割的增强必须同步变换 bbox/keypoints/mask，torchvision v2 和 albumentations 都支持这个
+
+---
 
 #### 1.8.7 GPU训练API
 
