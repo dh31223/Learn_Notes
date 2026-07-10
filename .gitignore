@@ -1,3 +1,9 @@
 Exams/
 */.vscode/
 .vscode/
+
+# 编译产物
+build/
+*.exe
+*.out
+
