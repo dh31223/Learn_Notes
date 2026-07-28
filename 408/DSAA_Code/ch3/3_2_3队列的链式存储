@@ -1,0 +1,126 @@
+#include<stdio.h>
+#include<stdlib.h>
+#include<stdbool.h>
+#define ElemType int
+
+typedef struct LNode{
+    ElemType data;
+    struct LNode* next;
+} LNode;
+
+typedef struct LQueue{
+    LNode* front;
+    LNode* rear;
+} LQueue;
+
+bool InitQueue(LQueue* Q){
+    if(Q == NULL)return false;
+    (*Q).front = (*Q).rear = (LNode* )malloc(sizeof(LNode));
+    (*Q).front->next = NULL;
+    return true;
+}
+
+bool EmptyQueue(LQueue* Q){
+    return (*Q).front == (*Q).rear;
+}
+
+bool EnQueue(LQueue* Q, ElemType x){
+    if(Q == NULL)return false;
+    LNode* temp = (LNode* )malloc(sizeof(LNode));
+    temp->data = x;
+    temp->next = NULL;
+    (*Q).rear->next = temp;
+    (*Q).rear = temp;
+    return true;
+}
+
+bool DeQueue(LQueue* Q, ElemType* x){
+    if(Q == NULL)return false;
+    if(EmptyQueue(Q))return false;
+    *x = (*Q).front->next->data;
+    LNode* p = (*Q).front->next;
+    (*Q).front->next = (*Q).front->next->next;
+    free(p);
+    p = NULL;
+    if((*Q).front->next == NULL){
+        (*Q).rear = (*Q).front;
+    }
+    return true;
+}
+
+bool GetHead(LQueue* Q, ElemType* x){
+    if(Q == NULL)return false;
+    if(EmptyQueue(Q))return false;
+    *x = (*Q).front->next->data;
+    return true;
+}
+
+bool PrintQueue(LQueue* Q){
+    if(Q == NULL)return false;
+    if(EmptyQueue(Q))return false;
+    LNode* temp = (*Q).front;
+    while(temp->next != NULL){
+        temp = temp->next;
+        printf("%d ", temp->data);
+    }
+    return true;
+}
+
+int main(){
+    LQueue Q;
+    ElemType x;
+
+    // 1. 初始化
+    printf("=== 初始化队列 ===\n");
+    InitQueue(&Q);
+    printf("队列是否为空: %s\n\n", EmptyQueue(&Q) ? "是" : "否");
+
+    // 2. 入队
+    printf("=== 入队 1, 2, 3 ===\n");
+    EnQueue(&Q, 1);
+    EnQueue(&Q, 2);
+    EnQueue(&Q, 3);
+    printf("队列内容: ");
+    PrintQueue(&Q);
+    printf("\n队列是否为空: %s\n\n", EmptyQueue(&Q) ? "是" : "否");
+
+    // 3. 读队头
+    printf("=== 读队头 ===\n");
+    GetHead(&Q, &x);
+    printf("队头元素: %d\n\n", x);
+
+    // 4. 出队
+    printf("=== 出队一个 ===\n");
+    DeQueue(&Q, &x);
+    printf("出队元素: %d\n", x);
+    printf("队列内容: ");
+    PrintQueue(&Q);
+    printf("\n\n");
+
+    // 5. 全部出队，测边界
+    printf("=== 全部出队 ===\n");
+    while(!EmptyQueue(&Q)){
+        DeQueue(&Q, &x);
+        printf("出队: %d\n", x);
+    }
+    printf("队列是否为空: %s\n", EmptyQueue(&Q) ? "是" : "否");
+
+    // 6. 空队再入队 —— 验证 rear 归位
+    printf("\n=== 空队后再入队 4, 5 ===\n");
+    EnQueue(&Q, 4);
+    EnQueue(&Q, 5);
+    printf("队列内容: ");
+    PrintQueue(&Q);
+    printf("\n");
+
+    // 7. 空队出队 —— 测非法操作
+    printf("\n=== 空队出队（应失败）===\n");
+    LQueue Q2;
+    InitQueue(&Q2);
+    if(!DeQueue(&Q2, &x))
+        printf("空队出队正确返回 false\n");
+    else
+        printf("❌ 空队出队应返回 false！\n");
+
+    return 0;
+}
